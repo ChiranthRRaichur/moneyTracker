@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AuraFinance - Gemini AI Financial Coach & Money Tracker</title>
+  <meta name="description" content="A next-generation personal finance dashboard integrated with a live Gemini AI budgeting assistant. Track spending, balance your ledger, and get expert coaching.">
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="glass-background"></div>
+  <div class="glow-orb orb-1"></div>
+  <div class="glow-orb orb-2"></div>
+  
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <h1 class="logo">Aura<span>Finance</span></h1>
+        <p class="subtitle">AI-Powered Wealth Intelligence</p>
+      </div>
+      <div class="header-right">
+        <div class="api-status-badge" id="api-status">
+          <span class="status-dot green"></span>
+          <span class="status-text">Backend Connected</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Metrics Overview Grid -->
+    <section class="metrics-grid">
+      <div class="metric-card balance-card">
+        <div class="card-glass"></div>
+        <div class="card-content">
+          <span class="metric-label">Net Balance</span>
+          <h2 class="metric-value" id="net-balance">$0.00</h2>
+          <span class="metric-trend" id="net-balance-trend">Ready to log</span>
+        </div>
+      </div>
+      <div class="metric-card income-card">
+        <div class="card-glass"></div>
+        <div class="card-content">
+          <span class="metric-label">Total Income</span>
+          <h2 class="metric-value text-success" id="total-income">$0.00</h2>
+          <span class="metric-trend" id="total-income-count">0 items logged</span>
+        </div>
+      </div>
+      <div class="metric-card expense-card">
+        <div class="card-glass"></div>
+        <div class="card-content">
+          <span class="metric-label">Total Expenses</span>
+          <h2 class="metric-value text-danger" id="total-expenses">$0.00</h2>
+          <span class="metric-trend" id="total-expenses-count">0 items logged</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Workspace Grid -->
+    <main class="workspace-grid">
+      <!-- Left Column: Transactions Form & Log -->
+      <div class="workspace-left">
+        <!-- Log Transaction Form -->
+        <section class="card form-card">
+          <h3 class="card-title">Log Transaction</h3>
+          <form id="transaction-form" class="transaction-form">
+            <div class="form-row">
+              <div class="form-group flex-2">
+                <label for="tx-description">Description</label>
+                <input type="text" id="tx-description" placeholder="e.g., Weekly Groceries, Gas, Salary" required autocomplete="off">
+              </div>
+              <div class="form-group flex-1">
+                <label for="tx-amount">Amount ($)</label>
+                <input type="number" id="tx-amount" step="0.01" min="0.01" placeholder="0.00" required>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="tx-type">Type</label>
+                <select id="tx-type" required>
+                  <option value="expense">Expense</option>
+                  <option value="income">Income</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="tx-category">Category</label>
+                <select id="tx-category" required>
+                  <option value="Food">Food & Groceries</option>
+                  <option value="Salary">Salary & Income</option>
+                  <option value="Rent">Rent & Housing</option>
+                  <option value="Utilities">Utilities & Bills</option>
+                  <option value="Leisure">Leisure & Shopping</option>
+                  <option value="Entertainment">Entertainment</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="tx-date">Date</label>
+                <input type="date" id="tx-date" required>
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="btn-submit">
+              <span>Log Transaction</span>
+            </button>
+          </form>
+        </section>
+
+        <!-- Transaction History List -->
+        <section class="card history-card">
+          <div class="history-header">
+            <h3 class="card-title">Transaction Ledger</h3>
+            <button id="btn-clear-filters" class="btn-text" style="display: none;">Clear Filter</button>
+          </div>
+          <div class="ledger-container">
+            <div class="ledger-header-row">
+              <span>Details</span>
+              <span>Category</span>
+              <span>Date</span>
+              <span class="text-right">Amount</span>
+              <span></span>
+            </div>
+            <div id="ledger-list" class="ledger-list">
+              <div class="ledger-empty">
+                <p>No transactions logged yet. Add one above to get started!</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right Column: AI Coach -->
+      <div class="workspace-right">
+        <section class="card ai-coach-card">
+          <div class="ai-header">
+            <div class="ai-avatar">
+              <div class="avatar-glow"></div>
+              <span>🤖</span>
+            </div>
+            <div class="ai-title-info">
+              <h3 class="card-title">Aura AI Coach</h3>
+              <p class="ai-status-indicator">Online & Analyzing</p>
+            </div>
+            <button id="btn-refresh-insights" class="btn-icon" title="Refresh automated budget analysis">
+              🔄
+            </button>
+          </div>
+
+          <!-- Tabbed/Container Layout for AI Response -->
+          <div class="ai-content-area">
+            <!-- Automated Insights Dashboard Panel -->
+            <div class="ai-insight-panel" id="ai-insight-panel">
+              <div class="insight-placeholder">
+                <p>Click the refresh button above or ask a question to analyze your finances.</p>
+              </div>
+            </div>
+
+            <!-- Chat Window for interactive queries -->
+            <div class="chat-container">
+              <div class="chat-messages" id="chat-messages">
+                <div class="chat-message assistant">
+                  <div class="message-bubble">
+                    Hello! I'm Aura, your AI Financial Coach. Ask me any questions about saving, budget strategies, or your spending habits!
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Chat Prompt Input -->
+              <form id="chat-form" class="chat-form">
+                <input type="text" id="chat-input" placeholder="Ask Aura (e.g., 'How can I save $100?')" required autocomplete="off">
+                <button type="submit" class="btn-send" id="btn-send">
+                  <svg viewBox="0 0 24 24" width="20" height="20">
+                    <path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                  </svg>
+                </button>
+              </form>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
