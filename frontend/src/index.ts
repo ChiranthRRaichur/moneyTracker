@@ -1,6 +1,6 @@
 import "./styles.css";
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = "http://localhost:8083";
 
 interface Transaction {
   id?: number;
@@ -44,52 +44,78 @@ const setDefaultDate = () => {
   txDateInput.value = today;
 };
 
+// Inline Markdown Helper
+function parseInlineMarkdown(text: string): string {
+  // Convert bold: **text** -> <strong>text</strong>
+  let html = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  // Convert italic: *text* -> <em>text</em>
+  html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
+  return html;
+}
+
 // Markdown Parser Helper for AI text
 function parseMarkdown(text: string): string {
-  // Convert newlines to HTML br
-  let html = text.replace(/\r?\n/g, "<br>");
-  
-  // Convert bold: **text**
-  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-  
-  // Convert lists: replace occurrences of * or - followed by space
-  // We can do a line-by-line check for lists for better cleanliness
   const lines = text.split(/\r?\n/);
-  let isInsideList = false;
-  const processedLines = lines.map(line => {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("* ") || trimmed.startsWith("- ")) {
-      const content = trimmed.substring(2);
-      let listLine = `<li>${content}</li>`;
-      if (!isInsideList) {
-        isInsideList = true;
-        listLine = `<ul>` + listLine;
+  let html = "";
+  let currentListType: "ul" | "ol" | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
+    if (!line) {
+      if (currentListType) {
+        html += `</${currentListType}>`;
+        currentListType = null;
       }
-      return listLine;
-    } else {
-      let result = line;
-      if (isInsideList) {
-        isInsideList = false;
-        result = `</ul>` + result;
-      }
-      return result;
+      continue;
     }
-  });
-  
-  if (isInsideList) {
-    processedLines.push("</ul>");
+
+    if (line === "---" || line === "***") {
+      if (currentListType) {
+        html += `</${currentListType}>`;
+        currentListType = null;
+      }
+      html += "<hr>";
+      continue;
+    }
+
+    const isBulletList = line.startsWith("* ") || line.startsWith("- ");
+    const isNumberedList = /^\d+\.\s/.test(line);
+
+    if (isBulletList || isNumberedList) {
+      const newListType = isBulletList ? "ul" : "ol";
+      if (currentListType && currentListType !== newListType) {
+        html += `</${currentListType}>`;
+        currentListType = null;
+      }
+      if (!currentListType) {
+        html += `<${newListType}>`;
+        currentListType = newListType;
+      }
+      const content = isBulletList ? line.substring(2) : line.replace(/^\d+\.\s/, "");
+      html += `<li>${parseInlineMarkdown(content)}</li>`;
+    } else {
+      if (currentListType) {
+        html += `</${currentListType}>`;
+        currentListType = null;
+      }
+
+      if (line.startsWith("### ")) {
+        html += `<h3>${parseInlineMarkdown(line.substring(4))}</h3>`;
+      } else if (line.startsWith("## ")) {
+        html += `<h2>${parseInlineMarkdown(line.substring(3))}</h2>`;
+      } else if (line.startsWith("# ")) {
+        html += `<h1>${parseInlineMarkdown(line.substring(2))}</h1>`;
+      } else {
+        html += `<p>${parseInlineMarkdown(line)}</p>`;
+      }
+    }
   }
-  
-  // Join and formatting
-  let finalHtml = processedLines.join("<br>");
-  // Clean double <br> and bold markers
-  finalHtml = finalHtml.replace(/<strong>(.*?)<\/strong>/g, "<strong>$1</strong>");
-  finalHtml = finalHtml.replace(/<br><br>/g, "</p><p>");
-  finalHtml = finalHtml.replace(/<ul><br>/g, "<ul>");
-  finalHtml = finalHtml.replace(/<\/li><br>/g, "</li>");
-  finalHtml = finalHtml.replace(/<\/ul><br>/g, "</ul>");
-  
-  return `<p>${finalHtml}</p>`;
+
+  if (currentListType) {
+    html += `</${currentListType}>`;
+  }
+
+  return html;
 }
 
 // Check backend API connection status
@@ -252,9 +278,9 @@ function updateUI() {
   const balance = income - expenses;
   
   // 2. Render cards
-  netBalanceEl.innerText = `${balance < 0 ? "-" : ""}$${Math.abs(balance).toFixed(2)}`;
-  totalIncomeEl.innerText = `$${income.toFixed(2)}`;
-  totalExpensesEl.innerText = `$${expenses.toFixed(2)}`;
+  netBalanceEl.innerText = `${balance < 0 ? "-" : ""}₹${Math.abs(balance).toFixed(2)}`;
+  totalIncomeEl.innerText = `₹${income.toFixed(2)}`;
+  totalExpensesEl.innerText = `₹${expenses.toFixed(2)}`;
   
   totalIncomeCountEl.innerText = `${incomeCount} items logged`;
   totalExpensesCountEl.innerText = `${expensesCount} items logged`;
@@ -290,7 +316,7 @@ function updateUI() {
         <span class="tx-desc-cell">${t.description}</span>
         <span><span class="tag ${tagClass}">${t.category}</span></span>
         <span class="tx-date-cell">${t.date}</span>
-        <span class="tx-amount-cell ${amountClass} text-right">${amountPrefix}$${t.amount.toFixed(2)}</span>
+        <span class="tx-amount-cell ${amountClass} text-right">${amountPrefix}₹${t.amount.toFixed(2)}</span>
         <span>
           <button class="btn-delete" data-id="${t.id}" title="Delete transaction">×</button>
         </span>

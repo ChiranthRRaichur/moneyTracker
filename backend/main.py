@@ -4,7 +4,16 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+
+# Load environment variables from .env if present
+if os.path.exists(".env"):
+    with open(".env") as f:
+        for line in f:
+            if "=" in line and not line.strip().startswith("#"):
+                key, val = line.strip().split("=", 1)
+                os.environ[key.strip()] = val.strip().strip("'\"")
 
 DB_PATH = os.environ.get("DATABASE_PATH", "finance.db")
 
@@ -13,7 +22,7 @@ app = FastAPI(title="Personal Money Tracker API")
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For local development, allow all origins. Can be restricted to http://localhost:8080
+    allow_origins=["http://localhost:8084"],  # Allow old and new frontend ports
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -119,7 +128,7 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
     conn.close()
     
     transactions_list = [
-        f"- {row['date']}: {row['type'].upper()} of ${row['amount']:.2f} for '{row['description']}' (Category: {row['category']})"
+        f"- {row['date']}: {row['type'].upper()} of ₹{row['amount']:.2f} for '{row['description']}' (Category: {row['category']})"
         for row in rows
     ]
     
@@ -132,9 +141,9 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
         f"The user's current transaction history is:\n"
         + ("\n".join(transactions_list) if transactions_list else "No transactions recorded yet.\n")
         + f"\nSummary statistics:\n"
-        f"- Total Income: ${total_income:.2f}\n"
-        f"- Total Expenses: ${total_expense:.2f}\n"
-        f"- Net Savings: ${net_savings:.2f}\n"
+        f"- Total Income: ₹{total_income:.2f}\n"
+        f"- Total Expenses: ₹{total_expense:.2f}\n"
+        f"- Net Savings: ₹{net_savings:.2f}\n"
     )
     
     question = req.question if req else None
@@ -145,17 +154,16 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
         # Fallback if API key is not configured
         if question:
             return {
-                "insight": f"**[Demo Mode - API Key Missing]** You asked: '{question}'.\n\nTo enable live responses from Gemini AI, please set the `GEMINI_API_KEY` environment variable on the server. \n\n*Based on your logs: Total Income is ${total_income:.2f}, Expenses are ${total_expense:.2f}, and Savings are ${net_savings:.2f}.*"
+                "insight": f"**[Demo Mode - API Key Missing]** You asked: '{question}'.\n\nTo enable live responses from Gemini AI, please set the `GEMINI_API_KEY` environment variable on the server. \n\n*Based on your logs: Total Income is ₹{total_income:.2f}, Expenses are ₹{total_expense:.2f}, and Savings are ₹{net_savings:.2f}.*"
             }
         else:
             return {
-                "insight": f"**[Demo Mode - API Key Missing]**\n\nTo enable live financial coaching from Gemini AI, please configure the `GEMINI_API_KEY` environment variable. \n\n*General Budgeting Tip:* Since your current net savings are **${net_savings:.2f}**, try allocating 50% of income to needs, 30% to wants, and 20% to savings/debt repayment (50/30/20 rule)."
+                "insight": f"**[Demo Mode - API Key Missing]**\n\nTo enable live financial coaching from Gemini AI, please configure the `GEMINI_API_KEY` environment variable. \n\n*General Budgeting Tip:* Since your current net savings are **₹{net_savings:.2f}**, try allocating 50% of income to needs, 30% to wants, and 20% to savings/debt repayment (50/30/20 rule)."
             }
             
     try:
-        genai.configure(api_key=api_key)
-        # Use gemini-1.5-flash-latest as default model
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        http_options = types.HttpOptions(client_args={"verify": False})
+        client = genai.Client(api_key=api_key, http_options=http_options)
         
         system_prompt = (
             "You are a friendly, expert Personal Financial Coach. Your goal is to analyze the user's spending "
@@ -179,7 +187,10 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
                 f"or optimizing their budget based on their spending categories."
             )
             
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-flash-latest",
+            contents=prompt,
+        )
         return {"insight": response.text}
         
     except Exception as e:

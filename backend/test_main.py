@@ -97,7 +97,7 @@ def test_insights_no_api_key():
             assert response.status_code == 200
             res_data = response.json()
             assert "Demo Mode" in res_data["insight"]
-            assert "Total Income is $2000.00" in res_data["insight"]
+            assert "Total Income is ₹2000.00" in res_data["insight"]
 
             response_q = client.post("/api/insights", json={"question": "Can I buy a laptop?"})
             assert response_q.status_code == 200
@@ -105,15 +105,14 @@ def test_insights_no_api_key():
             assert "Demo Mode" in res_data_q["insight"]
             assert "Can I buy a laptop?" in res_data_q["insight"]
 
-@patch("google.generativeai.GenerativeModel")
-def test_insights_with_api_key(mock_gen_model):
+@patch("google.genai.Client")
+def test_insights_with_api_key(mock_client_class):
     # Setup mock response
-    mock_model_instance = MagicMock()
+    mock_client_instance = MagicMock()
     mock_response = MagicMock()
     mock_response.text = "AI Financial Advice: Great job saving money!"
-    mock_model_instance.generate_content.return_code = 0
-    mock_model_instance.generate_content.return_value = mock_response
-    mock_gen_model.return_value = mock_model_instance
+    mock_client_instance.models.generate_content.return_value = mock_response
+    mock_client_class.return_value = mock_client_instance
 
     # Mock environment variable for GEMINI_API_KEY
     with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-api-key", "DATABASE_PATH": TEST_DB}):
@@ -129,5 +128,6 @@ def test_insights_with_api_key(mock_gen_model):
         assert response.status_code == 200
         assert response.json()["insight"] == "AI Financial Advice: Great job saving money!"
         
-        mock_gen_model.assert_called_once_with("gemini-1.5-flash")
-        mock_model_instance.generate_content.assert_called_once()
+        assert mock_client_class.call_count == 1
+        assert mock_client_class.call_args[1]["api_key"] == "fake-api-key"
+        mock_client_instance.models.generate_content.assert_called_once()
