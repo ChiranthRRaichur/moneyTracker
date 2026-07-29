@@ -1,9 +1,10 @@
 import "./styles.css";
 
-declare const process: any;
-const BACKEND_URL = typeof process !== "undefined" && process.env && process.env.BACKEND_URL
-  ? process.env.BACKEND_URL
-  : "http://localhost:8083";
+// Use the live Render backend when deployed, fall back to localhost for local development
+const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+const BACKEND_URL = isLocalhost
+  ? "http://localhost:8083"
+  : "https://aura-money-backend.onrender.com";
 
 interface Transaction {
   id?: number;

@@ -24,7 +24,7 @@ app = FastAPI(title="Personal Money Tracker API")
 # Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8084"],  # Allow old and new frontend ports
+    allow_origins=["http://localhost:8084","https://crrmoney.netlify.app"],  # Allow old and new frontend ports
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
