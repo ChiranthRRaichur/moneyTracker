@@ -16,6 +16,8 @@ if os.path.exists(".env"):
                 os.environ[key.strip()] = val.strip().strip("'\"")
 
 DB_PATH = os.environ.get("DATABASE_PATH", "finance.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+IS_POSTGRES = DATABASE_URL is not None
 
 app = FastAPI(title="Personal Money Tracker API")
 
@@ -42,28 +44,51 @@ class InsightRequest(BaseModel):
 
 # Database initialization
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            description TEXT NOT NULL,
-            amount REAL NOT NULL,
-            category TEXT NOT NULL,
-            type TEXT NOT NULL,
-            date TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    if IS_POSTGRES:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                description TEXT NOT NULL,
+                amount DOUBLE PRECISION NOT NULL,
+                category TEXT NOT NULL,
+                type TEXT NOT NULL,
+                date TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                description TEXT NOT NULL,
+                amount REAL NOT NULL,
+                category TEXT NOT NULL,
+                type TEXT NOT NULL,
+                date TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
 
 init_db()
 
 # DB Helper Functions
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if IS_POSTGRES:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 @app.get("/api/transactions", response_model=List[Transaction])
 def get_transactions():
@@ -93,12 +118,19 @@ def add_transaction(tx: Transaction):
         
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO transactions (description, amount, category, type, date) VALUES (?, ?, ?, ?, ?)",
-        (tx.description, tx.amount, tx.category, tx.type, tx.date)
-    )
+    if IS_POSTGRES:
+        cursor.execute(
+            "INSERT INTO transactions (description, amount, category, type, date) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (tx.description, tx.amount, tx.category, tx.type, tx.date)
+        )
+        new_id = cursor.fetchone()["id"]
+    else:
+        cursor.execute(
+            "INSERT INTO transactions (description, amount, category, type, date) VALUES (?, ?, ?, ?, ?)",
+            (tx.description, tx.amount, tx.category, tx.type, tx.date)
+        )
+        new_id = cursor.lastrowid
     conn.commit()
-    new_id = cursor.lastrowid
     conn.close()
     
     tx.id = new_id
@@ -108,12 +140,15 @@ def add_transaction(tx: Transaction):
 def delete_transaction(tx_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM transactions WHERE id = ?", (tx_id,))
+    
+    select_query = "SELECT id FROM transactions WHERE id = %s" if IS_POSTGRES else "SELECT id FROM transactions WHERE id = ?"
+    cursor.execute(select_query, (tx_id,))
     if not cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=404, detail="Transaction not found.")
         
-    cursor.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+    delete_query = "DELETE FROM transactions WHERE id = %s" if IS_POSTGRES else "DELETE FROM transactions WHERE id = ?"
+    cursor.execute(delete_query, (tx_id,))
     conn.commit()
     conn.close()
     return None
