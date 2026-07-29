@@ -1,6 +1,9 @@
 import "./styles.css";
 
-const BACKEND_URL = "http://localhost:8083";
+declare const process: any;
+const BACKEND_URL = typeof process !== "undefined" && process.env && process.env.BACKEND_URL
+  ? process.env.BACKEND_URL
+  : "http://localhost:8083";
 
 interface Transaction {
   id?: number;

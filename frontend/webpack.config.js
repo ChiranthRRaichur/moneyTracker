@@ -1,4 +1,5 @@
 const path = require("path");
+const webpack = require("webpack");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const CopyWebpackPlugin = require("copy-webpack-plugin");
 
@@ -36,6 +37,9 @@ module.exports = {
         { from: "src/sw.js", to: "sw.js" },
         { from: "src/icons", to: "icons", noErrorOnMissing: true },
       ],
+    }),
+    new webpack.DefinePlugin({
+      "process.env.BACKEND_URL": JSON.stringify(process.env.BACKEND_URL || "http://localhost:8083"),
     }),
   ],
   devServer: {
