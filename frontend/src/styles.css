@@ -825,24 +825,88 @@ select option {
 /* Responsive adjust */
 @media (max-width: 768px) {
   .app-container {
-    padding: 1.5rem 1rem;
+    padding: 1rem 0.75rem;
   }
   
   .logo {
-    font-size: 1.8rem;
+    font-size: 1.6rem;
   }
   
   .metrics-grid {
     grid-template-columns: 1fr;
+    gap: 1rem;
   }
   
-  .ledger-header-row, .ledger-row {
-    grid-template-columns: 1.8fr 1fr 1fr 30px;
+  .ledger-header-row {
+    display: none; /* Hide standard header row on mobile viewports */
   }
-  
-  .ledger-header-row span:nth-child(3),
+
+  .ledger-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    grid-template-areas:
+      "desc desc amount"
+      "tag date delete";
+    row-gap: 0.6rem;
+    column-gap: 0.5rem;
+    padding: 0.85rem 0.75rem;
+    margin-bottom: 0.5rem;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: var(--radius-sm);
+    align-items: center;
+  }
+
+  .ledger-row .tx-desc-cell {
+    grid-area: desc;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .ledger-row .tx-amount-cell {
+    grid-area: amount;
+    font-size: 1rem;
+    font-weight: 700;
+    text-align: right;
+    justify-self: end;
+  }
+
+  .ledger-row span:nth-child(2) {
+    grid-area: tag;
+  }
+
   .ledger-row .tx-date-cell {
-    display: none; /* Hide date on small screens */
+    display: inline-block !important; /* Date ALWAYS visible on mobile */
+    grid-area: date;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    justify-self: end;
+    align-self: center;
+  }
+
+  .ledger-row span:nth-child(5) {
+    grid-area: delete;
+    justify-self: end;
+    align-self: center;
+  }
+
+  .btn-delete {
+    width: 32px;
+    height: 32px;
+    font-size: 1.1rem;
+    background: rgba(244, 63, 94, 0.12);
+    color: var(--accent-danger);
+    border-radius: 6px;
+  }
+
+  .btn-delete:active {
+    transform: scale(0.92);
+    background: rgba(244, 63, 94, 0.25);
   }
 }
 

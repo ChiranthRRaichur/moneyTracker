@@ -66,6 +66,23 @@ const setDefaultDate = () => {
   txDateInput.value = today;
 };
 
+// Helper to format ISO date (YYYY-MM-DD) into readable date (e.g. 01 Aug 2026)
+const formatDate = (dateStr: string): string => {
+  if (!dateStr) return "";
+  const parts = dateStr.split("-");
+  if (parts.length !== 3) return dateStr;
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+  const dateObj = new Date(year, month, day);
+  if (isNaN(dateObj.getTime())) return dateStr;
+  return dateObj.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric"
+  });
+};
+
 // Inline Markdown Helper
 function parseInlineMarkdown(text: string): string {
   // Convert bold: **text** -> <strong>text</strong>
@@ -143,7 +160,7 @@ function parseMarkdown(text: string): string {
 // Check backend API connection status
 async function checkApiStatus(): Promise<boolean> {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/transactions`);
+    const response = await fetch(`${BACKEND_URL}/api/transactions?_t=${Date.now()}`, { cache: "no-store" });
     if (response.ok) {
       apiStatusBadge.className = "api-status-badge";
       apiStatusBadge.innerHTML = `
@@ -167,7 +184,7 @@ async function checkApiStatus(): Promise<boolean> {
 // Fetch all transactions
 async function loadTransactions() {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/transactions`);
+    const response = await fetch(`${BACKEND_URL}/api/transactions?_t=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) throw new Error("Failed to load transactions.");
     transactions = await response.json();
     updateUI();
@@ -688,10 +705,12 @@ function updateUI() {
   });
 
   const balance = income - expenses;
+  // Total Income deducts expenses as expenses increase
+  const remainingIncome = income - expenses;
 
   // 2. Render cards
   netBalanceEl.innerText = `${balance < 0 ? "-" : ""}₹${Math.abs(balance).toFixed(2)}`;
-  totalIncomeEl.innerText = `₹${income.toFixed(2)}`;
+  totalIncomeEl.innerText = `${remainingIncome < 0 ? "-" : ""}₹${Math.abs(remainingIncome).toFixed(2)}`;
   totalExpensesEl.innerText = `₹${expenses.toFixed(2)}`;
 
   totalIncomeCountEl.innerText = `${incomeCount} items logged`;
@@ -741,12 +760,13 @@ function updateUI() {
     const amountClass = t.type === "income" ? "text-success" : "text-danger";
     const amountPrefix = t.type === "income" ? "+" : "-";
     const tagClass = `tag-${t.category.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+    const formattedDateStr = formatDate(t.date);
 
     return `
       <div class="ledger-row" data-id="${t.id}">
         <span class="tx-desc-cell">${t.description}</span>
         <span><span class="tag ${tagClass}">${t.category}</span></span>
-        <span class="tx-date-cell">${t.date}</span>
+        <span class="tx-date-cell">${formattedDateStr}</span>
         <span class="tx-amount-cell ${amountClass} text-right">${amountPrefix}₹${t.amount.toFixed(2)}</span>
         <span>
           <button class="btn-delete" data-id="${t.id}" title="Delete transaction">×</button>
@@ -967,6 +987,16 @@ async function init() {
 
   // Poll API status every 10 seconds
   setInterval(checkApiStatus, 10000);
+
+  // Auto-refresh when mobile tab resumes focus/visibility
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      loadTransactions();
+    }
+  });
+  window.addEventListener("focus", () => {
+    loadTransactions();
+  });
 
   // Register PWA Service Worker
   if ("serviceWorker" in navigator) {

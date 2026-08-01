@@ -1,4 +1,4 @@
-const CACHE_NAME = "aura-money-cache-v1";
+const CACHE_NAME = "aura-money-cache-v2";
 const ASSETS = [
   "./",
   "./index.html",
@@ -34,8 +34,8 @@ self.addEventListener("activate", (e) => {
 
 // Fetch Event
 self.addEventListener("fetch", (e) => {
-  // Only handle GET requests and local assets
-  if (e.request.method !== "GET" || !e.request.url.startsWith(self.location.origin)) {
+  // Only handle GET requests and non-API local assets
+  if (e.request.method !== "GET" || !e.request.url.startsWith(self.location.origin) || e.request.url.includes("/api/")) {
     return;
   }
   
