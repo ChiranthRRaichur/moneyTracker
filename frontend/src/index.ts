@@ -705,12 +705,10 @@ function updateUI() {
   });
 
   const balance = income - expenses;
-  // Total Income deducts expenses as expenses increase
-  const remainingIncome = income - expenses;
 
   // 2. Render cards
   netBalanceEl.innerText = `${balance < 0 ? "-" : ""}₹${Math.abs(balance).toFixed(2)}`;
-  totalIncomeEl.innerText = `${remainingIncome < 0 ? "-" : ""}₹${Math.abs(remainingIncome).toFixed(2)}`;
+  totalIncomeEl.innerText = `₹${income.toFixed(2)}`;
   totalExpensesEl.innerText = `₹${expenses.toFixed(2)}`;
 
   totalIncomeCountEl.innerText = `${incomeCount} items logged`;
