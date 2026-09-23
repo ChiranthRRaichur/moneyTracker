@@ -131,3 +131,100 @@ def test_insights_with_api_key(mock_client_class):
         assert mock_client_class.call_count == 1
         assert mock_client_class.call_args[1]["api_key"] == "fake-api-key"
         mock_client_instance.models.generate_content.assert_called_once()
+
+def test_monthly_analytics():
+    with patch.dict(os.environ, {"DATABASE_PATH": TEST_DB}):
+        # 1. Test empty database analytics
+        res_empty = client.get("/api/analytics/monthly")
+        assert res_empty.status_code == 200
+        data_empty = res_empty.json()
+        assert "selected_month" in data_empty
+        assert "months" in data_empty
+        assert "selected_month_detail" in data_empty
+        assert data_empty["selected_month_detail"]["total_expense"] == 0.0
+
+        # 2. Add transactions across multiple months
+        # July 2026: Income ₹10,000, Food ₹1,500, Utilities ₹500
+        client.post("/api/transactions", json={
+            "description": "Salary July",
+            "amount": 10000.0,
+            "category": "Salary",
+            "type": "income",
+            "date": "2026-07-01"
+        })
+        client.post("/api/transactions", json={
+            "description": "Groceries",
+            "amount": 1500.0,
+            "category": "Food",
+            "type": "expense",
+            "date": "2026-07-10"
+        })
+        client.post("/api/transactions", json={
+            "description": "Electricity",
+            "amount": 500.0,
+            "category": "Utilities",
+            "type": "expense",
+            "date": "2026-07-15"
+        })
+
+        # August 2026: Income ₹12,000, Food ₹2,000, Leisure ₹1,000
+        client.post("/api/transactions", json={
+            "description": "Salary August",
+            "amount": 12000.0,
+            "category": "Salary",
+            "type": "income",
+            "date": "2026-08-01"
+        })
+        client.post("/api/transactions", json={
+            "description": "Dinner Out",
+            "amount": 2000.0,
+            "category": "Food",
+            "type": "expense",
+            "date": "2026-08-05"
+        })
+        client.post("/api/transactions", json={
+            "description": "Shopping",
+            "amount": 1000.0,
+            "category": "Leisure",
+            "type": "expense",
+            "date": "2026-08-20"
+        })
+
+        # 3. Query all months analytics
+        res = client.get("/api/analytics/monthly")
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["months"]) >= 2
+
+        # Check July summary
+        july = next((m for m in data["months"] if m["year_month"] == "2026-07"), None)
+        assert july is not None
+        assert july["total_expense"] == 2000.0
+        assert july["total_income"] == 10000.0
+        assert july["net_savings"] == 8000.0
+        assert july["savings_rate"] == 80.0
+        assert july["top_category"] == "Food"
+
+        # Check August summary & MoM comparison (spent 3000 vs 2000 = +1000, +50%)
+        aug = next((m for m in data["months"] if m["year_month"] == "2026-08"), None)
+        assert aug is not None
+        assert aug["total_expense"] == 3000.0
+        assert aug["mom_diff"] == 1000.0
+        assert aug["mom_pct"] == 50.0
+
+        # 4. Query specific month detail for August 2026
+        res_aug = client.get("/api/analytics/monthly?year=2026&month=8")
+        assert res_aug.status_code == 200
+        aug_detail = res_aug.json()["selected_month_detail"]
+        assert aug_detail["year_month"] == "2026-08"
+        assert aug_detail["total_expense"] == 3000.0
+        assert aug_detail["peak_day"]["day"] == 5
+        assert aug_detail["peak_day"]["amount"] == 2000.0
+
+        # Check category breakdown in August
+        categories = {c["category"]: c for c in aug_detail["category_breakdown"]}
+        assert "Food" in categories
+        assert categories["Food"]["amount"] == 2000.0
+        assert "Leisure" in categories
+        assert categories["Leisure"]["amount"] == 1000.0
+
