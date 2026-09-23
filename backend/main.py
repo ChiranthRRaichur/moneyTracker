@@ -455,3 +455,9 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
             status_code=500,
             detail=f"Error communicating with Gemini AI: {str(e)}"
         )
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8083))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+

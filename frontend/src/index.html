@@ -120,8 +120,11 @@
         <!-- Transaction History List -->
         <section class="card history-card">
           <div class="history-header">
-            <h3 class="card-title">Transaction Ledger</h3>
-            <button id="btn-clear-filters" class="btn-text" style="display: none;">Clear Filter</button>
+            <div class="history-title-group">
+              <h3 class="card-title">Transaction Ledger</h3>
+              <span id="ledger-filter-badge" class="filter-badge" style="display: none;"></span>
+            </div>
+            <button id="btn-clear-filters" class="btn-text" style="display: none;">✕ Clear Filter</button>
           </div>
           <div class="ledger-container">
             <div class="ledger-header-row">
@@ -148,38 +151,177 @@
 
       <!-- Right Column: Spending Analytics & AI Coach -->
       <div class="workspace-right">
-        <!-- Spending Analytics Chart -->
+        <!-- Spending Analytics & Month-Wise Breakdown -->
         <section class="card chart-card">
           <div class="chart-header">
-            <h3 class="card-title">Spending Analytics</h3>
-            <div class="chart-tabs">
-              <button id="btn-chart-weekly" class="chart-tab active">Weekly</button>
-              <button id="btn-chart-monthly" class="chart-tab">Monthly</button>
+            <div class="chart-title-group">
+              <h3 class="card-title">Spending Analytics</h3>
+              <span class="chart-subtitle" id="chart-subhead">Month-wise expenditure intelligence</span>
+            </div>
+            
+            <div class="chart-controls">
+              <!-- Month Navigator (visible in month detail view) -->
+              <div class="month-navigator" id="month-navigator">
+                <button type="button" id="btn-month-prev" class="btn-nav-arrow" title="Previous Month">◀</button>
+                <select id="month-select" class="month-select" aria-label="Select Analytics Month"></select>
+                <button type="button" id="btn-month-next" class="btn-nav-arrow" title="Next Month">▶</button>
+                <button type="button" id="btn-month-now" class="btn-chip" title="Jump to Current Month">Current</button>
+              </div>
+
+              <!-- View Tabs -->
+              <div class="chart-tabs">
+                <button type="button" id="btn-chart-monthly" class="chart-tab active">Month Breakdown</button>
+                <button type="button" id="btn-chart-history" class="chart-tab">Month Trends</button>
+                <button type="button" id="btn-chart-weekly" class="chart-tab">Weekly (7d)</button>
+              </div>
             </div>
           </div>
+
           <div class="chart-content">
-            <div class="chart-summary-container">
-              <div class="chart-summary">
-                <span class="summary-label" id="chart-summary-label">Total Spent (Last 7 Days)</span>
-                <h4 class="summary-value" id="chart-summary-value">₹0.00</h4>
+            <!-- 1. MONTH BREAKDOWN VIEW -->
+            <div id="view-month-detail" class="analytics-subview">
+              <!-- Monthly KPI Metrics Mini-Grid -->
+              <div class="month-kpis-grid">
+                <div class="month-kpi-card spent-kpi">
+                  <span class="kpi-label">Month Total Spent</span>
+                  <div class="kpi-row">
+                    <h4 class="kpi-value text-danger" id="month-kpi-spent">₹0.00</h4>
+                    <span class="chart-comparison-badge" id="month-kpi-mom">--</span>
+                  </div>
+                  <span class="kpi-footnote" id="month-kpi-txcount">0 expenses</span>
+                </div>
+                
+                <div class="month-kpi-card daily-kpi">
+                  <span class="kpi-label">Average Daily Spend</span>
+                  <h4 class="kpi-value" id="month-kpi-daily">₹0.00 <span class="unit">/ day</span></h4>
+                  <span class="kpi-footnote" id="month-kpi-days-count">30 days tracked</span>
+                </div>
+
+                <div class="month-kpi-card savings-kpi">
+                  <span class="kpi-label">Month Net Saved</span>
+                  <div class="kpi-row">
+                    <h4 class="kpi-value text-success" id="month-kpi-savings">₹0.00</h4>
+                    <span class="savings-rate-badge" id="month-kpi-savrate">0% rate</span>
+                  </div>
+                  <span class="kpi-footnote" id="month-kpi-income">Income: ₹0.00</span>
+                </div>
+
+                <div class="month-kpi-card peak-kpi">
+                  <span class="kpi-label">Peak Spending Day</span>
+                  <h4 class="kpi-value" id="month-kpi-peak">Day --</h4>
+                  <span class="kpi-footnote text-danger" id="month-kpi-peak-amt">₹0.00 spent</span>
+                </div>
               </div>
-              <div class="chart-comparison-badge" id="chart-comparison-badge">
-                <span id="comparison-trend-icon"></span>
-                <span id="comparison-trend-text">--</span>
+
+              <!-- Category Distribution Section -->
+              <div class="month-category-section">
+                <div class="section-subheading">
+                  <h5>Category Spending Breakdown</h5>
+                  <span class="category-meta" id="month-category-count">0 categories</span>
+                </div>
+
+                <div class="category-breakdown-container">
+                  <!-- Visual Donut / Progress Bar Display -->
+                  <div class="category-donut-box">
+                    <svg id="category-donut-svg" viewBox="0 0 160 160" width="130" height="130">
+                      <!-- Slices dynamically rendered by index.ts -->
+                    </svg>
+                    <div class="donut-center-text">
+                      <span class="donut-center-label">Total</span>
+                      <span class="donut-center-val" id="donut-center-amount">₹0</span>
+                    </div>
+                  </div>
+
+                  <!-- Category Item Bars List -->
+                  <div class="category-bars-list" id="category-bars-list">
+                    <!-- Populated dynamically -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Daily Spending Timeline (1 to 28/30/31) -->
+              <div class="daily-timeline-section">
+                <div class="section-subheading">
+                  <h5>Daily Spending Activity</h5>
+                  <span class="timeline-meta" id="timeline-month-label">Day 1 to 31</span>
+                </div>
+                <div class="daily-chart-container">
+                  <svg id="daily-timeline-svg" viewBox="0 0 540 140" width="100%" height="100%">
+                    <!-- Rendered dynamically -->
+                  </svg>
+                </div>
+              </div>
+
+              <!-- Month Actions -->
+              <div class="month-actions-bar">
+                <button type="button" id="btn-filter-ledger-month" class="btn-action-pill">
+                  <span>📅</span> Filter Ledger to this Month
+                </button>
+                <button type="button" id="btn-analyze-month-ai" class="btn-action-pill highlight">
+                  <span>✨</span> Analyze this Month with Aura AI
+                </button>
               </div>
             </div>
-            <div class="chart-visualization-container">
-              <svg id="spending-chart" viewBox="0 0 500 200" width="100%" height="100%">
-                <defs>
-                  <linearGradient id="bar-gradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stop-color="var(--accent-secondary)"/>
-                    <stop offset="100%" stop-color="var(--accent-primary)"/>
-                  </linearGradient>
-                </defs>
-                <!-- SVG elements will be generated by index.ts -->
-              </svg>
-              <div id="chart-tooltip" class="chart-tooltip" style="opacity: 0;"></div>
+
+            <!-- 2. MONTH TRENDS VIEW (HISTORICAL COMPARISON) -->
+            <div id="view-month-history" class="analytics-subview" style="display: none;">
+              <div class="section-subheading">
+                <h5>Month-over-Month Spending & Savings History</h5>
+                <span class="timeline-meta" id="history-months-count">All tracked months</span>
+              </div>
+              <div class="multi-month-chart-box">
+                <svg id="multi-month-svg" viewBox="0 0 500 160" width="100%" height="100%">
+                  <!-- Multi-month comparative bars -->
+                </svg>
+              </div>
+              <div class="month-history-table-container">
+                <table class="month-history-table">
+                  <thead>
+                    <tr>
+                      <th>Month</th>
+                      <th>Total Spent</th>
+                      <th>MoM Change</th>
+                      <th>Total Income</th>
+                      <th>Net Saved</th>
+                      <th>Savings Rate</th>
+                      <th>Top Category</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="month-history-tbody">
+                    <!-- Populated dynamically -->
+                  </tbody>
+                </table>
+              </div>
             </div>
+
+            <!-- 3. WEEKLY VIEW (7-DAY COMPARISON) -->
+            <div id="view-weekly-chart" class="analytics-subview" style="display: none;">
+              <div class="chart-summary-container">
+                <div class="chart-summary">
+                  <span class="summary-label" id="chart-summary-label">Total Spent (Last 7 Days)</span>
+                  <h4 class="summary-value" id="chart-summary-value">₹0.00</h4>
+                </div>
+                <div class="chart-comparison-badge" id="chart-comparison-badge">
+                  <span id="comparison-trend-icon"></span>
+                  <span id="comparison-trend-text">--</span>
+                </div>
+              </div>
+              <div class="chart-visualization-container">
+                <svg id="spending-chart" viewBox="0 0 500 200" width="100%" height="100%">
+                  <defs>
+                    <linearGradient id="bar-gradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="var(--accent-secondary)"/>
+                      <stop offset="100%" stop-color="var(--accent-primary)"/>
+                    </linearGradient>
+                  </defs>
+                  <!-- SVG elements will be generated by index.ts -->
+                </svg>
+              </div>
+            </div>
+
+            <!-- Shared Floating Tooltip -->
+            <div id="chart-tooltip" class="chart-tooltip" style="opacity: 0;"></div>
           </div>
         </section>
 
