@@ -1,10 +1,24 @@
 import "./styles.css";
 
-// Use the live Render backend when deployed, fall back to localhost for local development
-const isLocalhost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-const BACKEND_URL = isLocalhost
-  ? "http://localhost:8083"
-  : "https://aura-money-backend.onrender.com";
+declare const process: {
+  env: {
+    BACKEND_URL?: string;
+  };
+};
+
+function resolveBackendUrl(): string {
+  if (typeof process !== "undefined" && process.env && process.env.BACKEND_URL && process.env.BACKEND_URL !== "http://localhost:8083") {
+    return process.env.BACKEND_URL;
+  }
+  const host = window.location.hostname;
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host.startsWith("192.168.") || host.startsWith("10.") || host === "0.0.0.0";
+  if (isLocal) {
+    return `http://${host}:8083`;
+  }
+  return "https://aura-money-backend.onrender.com";
+}
+
+const BACKEND_URL = resolveBackendUrl();
 
 interface Transaction {
   id?: number;
@@ -77,6 +91,8 @@ let filteredMonth: string | null = null;
 let filteredCategory: string | null = null;
 let currentPage = 1;
 const itemsPerPage = 8;
+let chatHistory: { role: "user" | "assistant"; content: string }[] = [];
+let pendingDeleteId: number | null = null;
 
 // Category Color Palette
 const CATEGORY_COLORS: Record<string, string> = {
@@ -109,11 +125,31 @@ const ledgerListEl = document.getElementById("ledger-list") as HTMLDivElement;
 const ledgerFilterBadge = document.getElementById("ledger-filter-badge") as HTMLSpanElement;
 const btnClearFilters = document.getElementById("btn-clear-filters") as HTMLButtonElement;
 
+// Edit Modal DOM Elements
+const modalEditTx = document.getElementById("modal-edit-tx") as HTMLDivElement;
+const btnCloseEditModal = document.getElementById("btn-close-edit-modal") as HTMLButtonElement;
+const btnCancelEdit = document.getElementById("btn-cancel-edit") as HTMLButtonElement;
+const editTxForm = document.getElementById("edit-transaction-form") as HTMLFormElement;
+const editTxIdInput = document.getElementById("edit-tx-id") as HTMLInputElement;
+const editTxDescInput = document.getElementById("edit-tx-description") as HTMLInputElement;
+const editTxAmountInput = document.getElementById("edit-tx-amount") as HTMLInputElement;
+const editTxTypeSelect = document.getElementById("edit-tx-type") as HTMLSelectElement;
+const editTxCatSelect = document.getElementById("edit-tx-category") as HTMLSelectElement;
+const editTxDateInput = document.getElementById("edit-tx-date") as HTMLInputElement;
+
+// Delete Modal DOM Elements
+const modalDeleteConfirm = document.getElementById("modal-delete-confirm") as HTMLDivElement;
+const btnCloseDeleteModal = document.getElementById("btn-close-delete-modal") as HTMLButtonElement;
+const btnCancelDelete = document.getElementById("btn-cancel-delete") as HTMLButtonElement;
+const btnConfirmDelete = document.getElementById("btn-confirm-delete") as HTMLButtonElement;
+const deleteModalMsg = document.getElementById("delete-modal-message") as HTMLParagraphElement;
+
 const aiInsightPanelEl = document.getElementById("ai-insight-panel") as HTMLDivElement;
 const chatMessagesEl = document.getElementById("chat-messages") as HTMLDivElement;
 const chatForm = document.getElementById("chat-form") as HTMLFormElement;
 const chatInput = document.getElementById("chat-input") as HTMLInputElement;
 const btnRefreshInsights = document.getElementById("btn-refresh-insights") as HTMLButtonElement;
+
 
 // Analytics View Subviews & Controls
 const viewMonthDetail = document.getElementById("view-month-detail") as HTMLDivElement;
@@ -541,6 +577,31 @@ async function createTransaction(tx: Transaction) {
   }
 }
 
+// Update an existing transaction
+async function updateTransaction(id: number, tx: Transaction) {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/transactions/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(tx)
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || "Error updating transaction.");
+    }
+    const updatedTx = await response.json();
+    const idx = transactions.findIndex(t => t.id === id);
+    if (idx !== -1) {
+      transactions[idx] = updatedTx;
+    }
+    await fetchMonthlyAnalytics(selectedYearMonth);
+    updateUI();
+    showNotification("Transaction updated successfully!", "success");
+  } catch (error: any) {
+    showNotification(error.message, "danger");
+  }
+}
+
 // Delete a transaction
 async function removeTransaction(id: number) {
   try {
@@ -589,9 +650,10 @@ async function fetchAutomatedInsights() {
   }
 }
 
-// Interactive chat with AI financial coach
+// Interactive chat with AI financial coach (supports multi-turn context)
 async function askCoach(question: string) {
   appendChatMessage(question, "user");
+  chatHistory.push({ role: "user", content: question });
   const loaderId = appendLoadingMessage();
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 
@@ -599,7 +661,7 @@ async function askCoach(question: string) {
     const response = await fetch(`${BACKEND_URL}/api/insights`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question })
+      body: JSON.stringify({ question, history: chatHistory.slice(-6) })
     });
 
     removeLoadingMessage(loaderId);
@@ -607,6 +669,7 @@ async function askCoach(question: string) {
     if (!response.ok) throw new Error();
     const data = await response.json();
 
+    chatHistory.push({ role: "assistant", content: data.insight });
     appendChatMessage(data.insight, "assistant");
   } catch (error) {
     removeLoadingMessage(loaderId);
@@ -1423,20 +1486,78 @@ function updateUI() {
         <span><span class="tag ${tagClass}">${t.category}</span></span>
         <span class="tx-date-cell">${formattedDateStr}</span>
         <span class="tx-amount-cell ${amountClass} text-right">${amountPrefix}₹${t.amount.toFixed(2)}</span>
-        <span>
-          <button type="button" class="btn-delete" data-id="${t.id}" title="Delete transaction">×</button>
+        <span class="row-actions">
+          <button type="button" class="btn-action-icon btn-edit" data-id="${t.id}" title="Edit transaction">✎</button>
+          <button type="button" class="btn-action-icon btn-delete" data-id="${t.id}" title="Delete transaction">×</button>
         </span>
       </div>
     `;
   }).join("");
 
+  ledgerListEl.querySelectorAll(".btn-edit").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      const target = e.currentTarget as HTMLButtonElement;
+      const id = parseInt(target.getAttribute("data-id") || "0", 10);
+      const tx = transactions.find(t => t.id === id);
+      if (tx) openEditModal(tx);
+    });
+  });
+
   ledgerListEl.querySelectorAll(".btn-delete").forEach(btn => {
     btn.addEventListener("click", (e) => {
       const target = e.currentTarget as HTMLButtonElement;
       const id = parseInt(target.getAttribute("data-id") || "0", 10);
-      if (id) removeTransaction(id);
+      const tx = transactions.find(t => t.id === id);
+      if (tx) openDeleteModal(tx);
     });
   });
+}
+
+// Modal helper functions
+function openEditModal(tx: Transaction) {
+  if (!tx.id) return;
+  editTxIdInput.value = String(tx.id);
+  editTxDescInput.value = tx.description;
+  editTxAmountInput.value = String(tx.amount);
+  editTxTypeSelect.value = tx.type;
+  
+  syncEditCategoryDropdown(tx.type);
+  editTxCatSelect.value = tx.category;
+  editTxDateInput.value = tx.date;
+
+  modalEditTx.style.display = "flex";
+}
+
+function closeEditModal() {
+  modalEditTx.style.display = "none";
+  editTxForm.reset();
+}
+
+function syncEditCategoryDropdown(type: string) {
+  const categories = editTxCatSelect.options;
+  if (type === "income") {
+    for (let i = 0; i < categories.length; i++) {
+      const opt = categories[i];
+      opt.style.display = (opt.value !== "Salary" && opt.value !== "Other") ? "none" : "block";
+    }
+  } else {
+    for (let i = 0; i < categories.length; i++) {
+      const opt = categories[i];
+      opt.style.display = opt.value === "Salary" ? "none" : "block";
+    }
+  }
+}
+
+function openDeleteModal(tx: Transaction) {
+  if (!tx.id) return;
+  pendingDeleteId = tx.id;
+  deleteModalMsg.innerText = `Are you sure you want to permanently delete "${tx.description}" (₹${tx.amount.toFixed(2)})? This action cannot be undone.`;
+  modalDeleteConfirm.style.display = "flex";
+}
+
+function closeDeleteModal() {
+  modalDeleteConfirm.style.display = "none";
+  pendingDeleteId = null;
 }
 
 // Chat UI helpers
@@ -1668,6 +1789,59 @@ txTypeSelect.addEventListener("change", () => {
   }
 });
 
+// Edit Modal Event Handlers
+btnCloseEditModal.addEventListener("click", closeEditModal);
+btnCancelEdit.addEventListener("click", closeEditModal);
+modalEditTx.addEventListener("click", (e) => {
+  if (e.target === modalEditTx) closeEditModal();
+});
+
+editTxTypeSelect.addEventListener("change", () => {
+  syncEditCategoryDropdown(editTxTypeSelect.value);
+  if (editTxTypeSelect.value === "income") {
+    editTxCatSelect.value = "Salary";
+  } else {
+    editTxCatSelect.value = "Food";
+  }
+});
+
+editTxForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const id = parseInt(editTxIdInput.value, 10);
+  if (!id) return;
+
+  const updatedTx: Transaction = {
+    id,
+    description: editTxDescInput.value.trim(),
+    amount: parseFloat(editTxAmountInput.value),
+    type: editTxTypeSelect.value as "income" | "expense",
+    category: editTxCatSelect.value,
+    date: editTxDateInput.value
+  };
+
+  if (!updatedTx.description || isNaN(updatedTx.amount) || updatedTx.amount <= 0 || !updatedTx.date) {
+    showNotification("Please fill in all transaction fields correctly.", "danger");
+    return;
+  }
+
+  updateTransaction(id, updatedTx);
+  closeEditModal();
+});
+
+// Delete Modal Event Handlers
+btnCloseDeleteModal.addEventListener("click", closeDeleteModal);
+btnCancelDelete.addEventListener("click", closeDeleteModal);
+modalDeleteConfirm.addEventListener("click", (e) => {
+  if (e.target === modalDeleteConfirm) closeDeleteModal();
+});
+
+btnConfirmDelete.addEventListener("click", () => {
+  if (pendingDeleteId) {
+    removeTransaction(pendingDeleteId);
+  }
+  closeDeleteModal();
+});
+
 if (btnPrevPage && btnNextPage) {
   btnPrevPage.addEventListener("click", () => {
     if (currentPage > 1) {
@@ -1690,8 +1864,13 @@ if (btnPrevPage && btnNextPage) {
   });
 }
 
+let isInitialized = false;
+
 // Startup initialization
 async function init() {
+  if (isInitialized) return;
+  isInitialized = true;
+
   setDefaultDate();
 
   const isOnline = await checkApiStatus();
@@ -1716,10 +1895,9 @@ async function init() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", init);
-window.addEventListener("load", () => {
-  if (document.readyState === "complete" || document.readyState === "interactive") {
-    init();
-  }
-});
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
 

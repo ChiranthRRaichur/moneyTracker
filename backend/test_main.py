@@ -66,16 +66,46 @@ def test_crud_transactions():
     response = client.post("/api/transactions", json=bad_payload2)
     assert response.status_code == 400
 
-    # 5. Delete transaction
+    bad_payload3 = payload.copy()
+    bad_payload3["description"] = "   "
+    response = client.post("/api/transactions", json=bad_payload3)
+    assert response.status_code == 400
+
+    bad_payload4 = payload.copy()
+    bad_payload4["date"] = "invalid-date"
+    response = client.post("/api/transactions", json=bad_payload4)
+    assert response.status_code == 400
+
+    # 5. Update transaction (PUT)
+    update_payload = {
+        "description": "Weekly Groceries & Snacks",
+        "amount": 85.00,
+        "category": "Food",
+        "type": "expense",
+        "date": "2026-07-27"
+    }
+    put_response = client.put(f"/api/transactions/{tx_id}", json=update_payload)
+    assert put_response.status_code == 200
+    updated_data = put_response.json()
+    assert updated_data["description"] == "Weekly Groceries & Snacks"
+    assert updated_data["amount"] == 85.00
+    assert updated_data["date"] == "2026-07-27"
+    assert updated_data["id"] == tx_id
+
+    # 6. Try updating non-existent transaction
+    bad_put = client.put("/api/transactions/9999", json=update_payload)
+    assert bad_put.status_code == 404
+
+    # 7. Delete transaction
     response = client.delete(f"/api/transactions/{tx_id}")
     assert response.status_code == 204
 
-    # 6. Verify empty list again
+    # 8. Verify empty list again
     response = client.get("/api/transactions")
     assert response.status_code == 200
     assert response.json() == []
 
-    # 7. Try deleting non-existent transaction
+    # 9. Try deleting non-existent transaction
     response = client.delete("/api/transactions/9999")
     assert response.status_code == 404
 

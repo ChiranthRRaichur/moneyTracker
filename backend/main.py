@@ -1,5 +1,8 @@
 import os
 import sqlite3
+import re
+import calendar
+from datetime import datetime
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,23 +19,36 @@ if env_path:
                 key, val = line.strip().split("=", 1)
                 os.environ[key.strip()] = val.strip().strip("'\"")
 
-DB_PATH = os.environ.get("DATABASE_PATH", "finance.db")
+# Locate database path consistently regardless of CWD
+root_db = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "finance.db"))
+backend_db = os.path.abspath(os.path.join(os.path.dirname(__file__), "finance.db"))
+default_db = backend_db if os.path.exists(backend_db) else root_db
+DB_PATH = os.environ.get("DATABASE_PATH", default_db)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 IS_POSTGRES = DATABASE_URL is not None
+DATE_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 app = FastAPI(title="Personal Money Tracker API")
 
-# Setup CORS
+# Setup CORS with local and deployed origins
+origins = [
+    "http://localhost:8084",
+    "http://127.0.0.1:8084",
+    "http://localhost:3000",
+    "https://crrmoney.netlify.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8084","https://crrmoney.netlify.app"],  # Allow old and new frontend ports
+    allow_origins=origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Models
-class Transaction(BaseModel): #pydantic base model 
+class Transaction(BaseModel):
     id: Optional[int] = None
     description: str
     amount: float
@@ -40,8 +56,35 @@ class Transaction(BaseModel): #pydantic base model
     type: str  # "income" or "expense"
     date: str  # YYYY-MM-DD
 
+class ChatHistoryItem(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
 class InsightRequest(BaseModel):
     question: Optional[str] = None
+    history: Optional[List[ChatHistoryItem]] = None
+
+def validate_transaction_payload(tx: Transaction):
+    if not tx.description or not tx.description.strip():
+        raise HTTPException(status_code=400, detail="Transaction description cannot be empty.")
+    if tx.type not in ["income", "expense"]:
+        raise HTTPException(status_code=400, detail="Transaction type must be 'income' or 'expense'.")
+    if tx.amount <= 0:
+        raise HTTPException(status_code=400, detail="Transaction amount must be positive.")
+    if not tx.category or not tx.category.strip():
+        raise HTTPException(status_code=400, detail="Transaction category cannot be empty.")
+    clean_date = tx.date.strip() if tx.date else ""
+    if not clean_date or not DATE_REGEX.match(clean_date):
+        raise HTTPException(status_code=400, detail="Transaction date must be in YYYY-MM-DD format.")
+    try:
+        datetime.strptime(clean_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Transaction date is not a valid calendar date.")
+
+    # Apply trimmed values
+    tx.description = tx.description.strip()
+    tx.category = tx.category.strip()
+    tx.date = clean_date
 
 # Database initialization
 def init_db():
@@ -62,8 +105,12 @@ def init_db():
         conn.commit()
         conn.close()
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +134,7 @@ def get_db_connection():
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
         return conn
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -112,10 +159,7 @@ def get_transactions():
 
 @app.post("/api/transactions", response_model=Transaction, status_code=status.HTTP_201_CREATED)
 def add_transaction(tx: Transaction):
-    if tx.type not in ["income", "expense"]:
-        raise HTTPException(status_code=400, detail="Transaction type must be 'income' or 'expense'.")
-    if tx.amount <= 0:
-        raise HTTPException(status_code=400, detail="Transaction amount must be positive.")
+    validate_transaction_payload(tx)
         
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -137,6 +181,35 @@ def add_transaction(tx: Transaction):
     tx.id = new_id
     return tx
 
+@app.put("/api/transactions/{tx_id}", response_model=Transaction)
+def update_transaction(tx_id: int, tx: Transaction):
+    validate_transaction_payload(tx)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    select_query = "SELECT id FROM transactions WHERE id = %s" if IS_POSTGRES else "SELECT id FROM transactions WHERE id = ?"
+    cursor.execute(select_query, (tx_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Transaction not found.")
+        
+    if IS_POSTGRES:
+        cursor.execute(
+            "UPDATE transactions SET description = %s, amount = %s, category = %s, type = %s, date = %s WHERE id = %s",
+            (tx.description, tx.amount, tx.category, tx.type, tx.date, tx_id)
+        )
+    else:
+        cursor.execute(
+            "UPDATE transactions SET description = ?, amount = ?, category = ?, type = ?, date = ? WHERE id = ?",
+            (tx.description, tx.amount, tx.category, tx.type, tx.date, tx_id)
+        )
+    conn.commit()
+    conn.close()
+    
+    tx.id = tx_id
+    return tx
+
 @app.delete("/api/transactions/{tx_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_transaction(tx_id: int):
     conn = get_db_connection()
@@ -153,9 +226,6 @@ def delete_transaction(tx_id: int):
     conn.commit()
     conn.close()
     return None
-
-import calendar
-from datetime import datetime
 
 @app.get("/api/analytics/monthly")
 def get_monthly_analytics(year: Optional[int] = None, month: Optional[int] = None):
@@ -235,13 +305,11 @@ def get_monthly_analytics(year: Optional[int] = None, month: Optional[int] = Non
     if year and month:
         target_ym = f"{year:04d}-{month:02d}"
     elif sorted_months:
-        # Default to latest month that has data, or current calendar month if present
         current_ym = f"{now.year:04d}-{now.month:02d}"
         target_ym = current_ym if current_ym in sorted_months else sorted_months[-1]
     else:
         target_ym = f"{now.year:04d}-{now.month:02d}"
 
-    # Extract year and month integers for target
     try:
         t_year, t_month = [int(p) for p in target_ym.split("-")]
     except Exception:
@@ -311,7 +379,6 @@ def get_monthly_analytics(year: Optional[int] = None, month: Optional[int] = Non
     net_target_sav = tot_target_inc - tot_target_exp
     sav_target_rate = round((net_target_sav / tot_target_inc) * 100, 1) if tot_target_inc > 0 else 0.0
 
-    # Days elapsed in month for daily average calculation
     if t_year == now.year and t_month == now.month:
         effective_days = max(1, now.day)
     else:
@@ -373,11 +440,20 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
     )
     
     question = req.question if req else None
+
+    # Multi-turn conversation context
+    history_context = ""
+    if req and req.history:
+        formatted_turns = []
+        for h in req.history[-6:]:
+            speaker = "User" if h.role == "user" else "Aura"
+            formatted_turns.append(f"{speaker}: {h.content}")
+        if formatted_turns:
+            history_context = "\nRecent Conversation History:\n" + "\n".join(formatted_turns) + "\n"
     
     # Configure Gemini SDK
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        # Fallback if API key is not configured
         if question:
             return {
                 "insight": f"**[Demo Mode - API Key Missing]** You asked: '{question}'.\n\nTo enable live responses from Gemini AI, please set the `GEMINI_API_KEY` environment variable on the server. \n\n*Based on your logs: Total Income is ₹{total_income:.2f}, Expenses are ₹{total_expense:.2f}, and Savings are ₹{net_savings:.2f}.*"
@@ -388,8 +464,13 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
             }
             
     try:
-        http_options = types.HttpOptions(client_args={"verify": False})
-        client = genai.Client(api_key=api_key, http_options=http_options)
+        # Respect SSL verification by default
+        verify_ssl = os.environ.get("GEMINI_VERIFY_SSL", "true").lower() != "false"
+        if not verify_ssl:
+            http_options = types.HttpOptions(client_args={"verify": False})
+            client = genai.Client(api_key=api_key, http_options=http_options)
+        else:
+            client = genai.Client(api_key=api_key)
         
         system_prompt = (
             "You are a friendly, expert Personal Financial Coach. Your goal is to analyze the user's spending "
@@ -402,8 +483,9 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
             prompt = (
                 f"{system_prompt}\n\n"
                 f"Financial Context:\n{summary_context}\n"
+                f"{history_context}"
                 f"User's Question: {question}\n\n"
-                f"Please answer the user's question directly and concisely, referencing their financial context where relevant."
+                f"Please answer the user's question directly and concisely, referencing their financial context and conversation history where relevant."
             )
         else:
             prompt = (
@@ -413,10 +495,9 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
                 f"or optimizing their budget based on their spending categories."
             )
             
-        # Support configurable model with automatic fallback list on 503 high demand
-        configured_model = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-        candidate_models = [configured_model, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
-        # Deduplicate while preserving order
+        # Support valid Gemini model candidates with automatic fallback
+        configured_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        candidate_models = [configured_model, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
         models_to_try = list(dict.fromkeys(candidate_models))
 
         last_error = None
@@ -431,13 +512,11 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
             except Exception as model_err:
                 last_error = model_err
                 err_str = str(model_err)
-                # If 503, high demand, or model not found, attempt next model candidate
                 if "503" in err_str or "404" in err_str or "unavailable" in err_str.lower() or "high demand" in err_str.lower() or "not found" in err_str.lower() or "not_found" in err_str.lower():
                     continue
                 else:
                     raise model_err
 
-        # If all candidates hit high demand, return friendly graceful analysis instead of 500
         if last_error and ("503" in str(last_error) or "UNAVAILABLE" in str(last_error) or "high demand" in str(last_error).lower()):
             return {
                 "insight": f"**[Aura AI High Demand Notice]** Google's AI servers are temporarily experiencing high traffic.\n\n"
@@ -460,4 +539,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8083))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+
 
