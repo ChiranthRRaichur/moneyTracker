@@ -535,9 +535,513 @@ def get_financial_insights(req: Optional[InsightRequest] = None):
             detail=f"Error communicating with Gemini AI: {str(e)}"
         )
 
+class VoiceActionDraft(BaseModel):
+    action_type: str  # "add_transaction" | "update_transaction" | "delete_transaction"
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    category: Optional[str] = None
+    type: Optional[str] = "expense"
+    date: Optional[str] = None
+    transaction_id: Optional[int] = None
+
+class VoiceAgentRequest(BaseModel):
+    transcript: str
+    history: Optional[List[ChatHistoryItem]] = None
+    pending_action: Optional[VoiceActionDraft] = None
+    user_confirmed: Optional[bool] = None
+
+class VoiceAgentResponse(BaseModel):
+    spoken_response: str
+    action_taken: Optional[dict] = None
+    pending_action: Optional[VoiceActionDraft] = None
+    should_refresh_data: bool = False
+
+@app.post("/api/agent/voice", response_model=VoiceAgentResponse)
+def process_voice_command(req: VoiceAgentRequest):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, description, amount, category, type, date FROM transactions ORDER BY date DESC, id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+
+    total_income = sum(row['amount'] for row in rows if row['type'] == 'income')
+    total_expense = sum(row['amount'] for row in rows if row['type'] == 'expense')
+    net_savings = total_income - total_expense
+    
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    current_ym = now.strftime("%Y-%m")
+    current_month_name = calendar.month_name[now.month]
+
+    # Calculate Current Month Analytics
+    month_expenses = [r for r in rows if r['type'] == 'expense' and r['date'] and r['date'].startswith(current_ym)]
+    month_incomes = [r for r in rows if r['type'] == 'income' and r['date'] and r['date'].startswith(current_ym)]
+    
+    # If current month has no transactions, fallback to latest active month
+    active_ym = current_ym
+    active_month_name = current_month_name
+    if not month_expenses and not month_incomes and rows:
+        active_ym = rows[0]['date'][:7] if rows[0]['date'] else current_ym
+        ym_parts = active_ym.split("-")
+        if len(ym_parts) == 2:
+            try:
+                active_month_name = calendar.month_name[int(ym_parts[1])]
+            except Exception:
+                active_month_name = current_month_name
+        month_expenses = [r for r in rows if r['type'] == 'expense' and r['date'] and r['date'].startswith(active_ym)]
+        month_incomes = [r for r in rows if r['type'] == 'income' and r['date'] and r['date'].startswith(active_ym)]
+
+    month_exp_total = sum(r['amount'] for r in month_expenses)
+    month_inc_total = sum(r['amount'] for r in month_incomes)
+    month_net = month_inc_total - month_exp_total
+    month_sav_rate = round((month_net / month_inc_total * 100), 1) if month_inc_total > 0 else 0.0
+
+    # Daily aggregation for peak day calculation
+    daily_spend_map: dict = {}
+    for r in month_expenses:
+        d = r['date']
+        daily_spend_map[d] = daily_spend_map.get(d, 0.0) + float(r['amount'])
+
+    peak_date = max(daily_spend_map, key=daily_spend_map.get) if daily_spend_map else None
+    peak_amount = daily_spend_map[peak_date] if peak_date else 0.0
+    peak_day_num = int(peak_date.split("-")[2]) if peak_date else None
+    peak_items = [r for r in month_expenses if r['date'] == peak_date] if peak_date else []
+    peak_top_item = max(peak_items, key=lambda x: x['amount']) if peak_items else None
+
+    # Category breakdown for current month
+    month_cat_sums: dict = {}
+    for r in month_expenses:
+        c = r['category']
+        month_cat_sums[c] = month_cat_sums.get(c, 0.0) + float(r['amount'])
+    top_cat_month = max(month_cat_sums, key=month_cat_sums.get) if month_cat_sums else None
+    top_cat_month_amt = month_cat_sums[top_cat_month] if top_cat_month else 0.0
+    top_cat_pct = round((top_cat_month_amt / month_exp_total * 100), 1) if month_exp_total > 0 else 0.0
+
+    # Highest single expense
+    highest_tx_month = max(month_expenses, key=lambda x: x['amount']) if month_expenses else None
+    all_expenses = [r for r in rows if r['type'] == 'expense']
+    highest_tx_all = max(all_expenses, key=lambda x: x['amount']) if all_expenses else None
+
+    transcript_clean = req.transcript.strip()
+    transcript_lower = transcript_clean.lower()
+
+    # 1. Handle Confirmation / Cancellation of a pending action
+    if req.pending_action:
+        pending = req.pending_action
+        is_yes = req.user_confirmed is True or any(w in transcript_lower for w in ["yes", "confirm", "proceed", "sure", "ok", "go ahead", "do it", "yeah", "yep", "correct"])
+        is_no = req.user_confirmed is False or any(w in transcript_lower for w in ["no", "cancel", "stop", "don't", "dont", "nevermind", "abort", "nope"])
+
+        if is_yes:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            if pending.action_type == "add_transaction":
+                desc = pending.description or "Expense"
+                amt = float(pending.amount or 0.0)
+                cat = pending.category or "Other"
+                ttype = pending.type or "expense"
+                dt = pending.date or today_str
+                
+                if IS_POSTGRES:
+                    cur.execute("INSERT INTO transactions (description, amount, category, type, date) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                                (desc, amt, cat, ttype, dt))
+                    new_id = cur.fetchone()["id"]
+                else:
+                    cur.execute("INSERT INTO transactions (description, amount, category, type, date) VALUES (?, ?, ?, ?, ?)",
+                                (desc, amt, cat, ttype, dt))
+                    new_id = cur.lastrowid
+                conn.commit()
+                conn.close()
+
+                new_balance = net_savings + (amt if ttype == "income" else -amt)
+                return VoiceAgentResponse(
+                    spoken_response=f"Confirmed! Logged ₹{amt:,.2f} for {desc} under {cat}. Your net balance is now ₹{new_balance:,.2f}.",
+                    action_taken={"type": "added", "id": new_id, "description": desc, "amount": amt, "category": cat, "date": dt},
+                    pending_action=None,
+                    should_refresh_data=True
+                )
+            elif pending.action_type == "delete_transaction" and pending.transaction_id:
+                tx_id = pending.transaction_id
+                q = "DELETE FROM transactions WHERE id = %s" if IS_POSTGRES else "DELETE FROM transactions WHERE id = ?"
+                cur.execute(q, (tx_id,))
+                conn.commit()
+                conn.close()
+                return VoiceAgentResponse(
+                    spoken_response=f"Deleted transaction for {pending.description or 'item'}.",
+                    action_taken={"type": "deleted", "id": tx_id},
+                    pending_action=None,
+                    should_refresh_data=True
+                )
+            elif pending.action_type == "update_transaction" and pending.transaction_id:
+                tx_id = pending.transaction_id
+                desc = pending.description or "Updated"
+                amt = float(pending.amount or 0.0)
+                cat = pending.category or "Other"
+                ttype = pending.type or "expense"
+                dt = pending.date or today_str
+                if IS_POSTGRES:
+                    cur.execute("UPDATE transactions SET description = %s, amount = %s, category = %s, type = %s, date = %s WHERE id = %s",
+                                (desc, amt, cat, ttype, dt, tx_id))
+                else:
+                    cur.execute("UPDATE transactions SET description = ?, amount = ?, category = ?, type = ?, date = ? WHERE id = ?",
+                                (desc, amt, cat, ttype, dt, tx_id))
+                conn.commit()
+                conn.close()
+                return VoiceAgentResponse(
+                    spoken_response=f"Updated {desc} to ₹{amt:,.2f}.",
+                    action_taken={"type": "updated", "id": tx_id, "description": desc, "amount": amt},
+                    pending_action=None,
+                    should_refresh_data=True
+                )
+
+        if is_no:
+            return VoiceAgentResponse(
+                spoken_response="Understood, I have cancelled that action.",
+                action_taken=None,
+                pending_action=None,
+                should_refresh_data=False
+            )
+
+    # 2. Direct Greeting Handler for Chiranth
+    if re.search(r"^\s*(hi|hello|hey|hey aura|good\s*(morning|afternoon|evening))\b", transcript_lower):
+        return VoiceAgentResponse(
+            spoken_response="Hey Chiranth! What do you want to track or check today?",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # 3. Check for Direct Keyword Heuristics for Deletion of Last Transaction
+    if "delete last" in transcript_lower or "remove last" in transcript_lower:
+        if rows:
+            last_tx = rows[0]
+            draft = VoiceActionDraft(
+                action_type="delete_transaction",
+                description=last_tx["description"],
+                amount=last_tx["amount"],
+                category=last_tx["category"],
+                transaction_id=last_tx["id"]
+            )
+            return VoiceAgentResponse(
+                spoken_response=f"Are you sure you want to delete your last transaction for {last_tx['description']} of ₹{last_tx['amount']:,.2f}?",
+                pending_action=draft,
+                should_refresh_data=False
+            )
+        else:
+            return VoiceAgentResponse(
+                spoken_response="You have no transactions logged to delete.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+
+    # 4. Use Gemini AI for Agentic Reasoning if API Key is Present
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        try:
+            verify_ssl = os.environ.get("GEMINI_VERIFY_SSL", "true").lower() != "false"
+            if not verify_ssl:
+                http_options = types.HttpOptions(client_args={"verify": False})
+                client = genai.Client(api_key=api_key, http_options=http_options)
+            else:
+                client = genai.Client(api_key=api_key)
+
+            transactions_context = "\n".join([
+                f"- ID {r['id']}: {r['date']} | {r['type'].upper()} | ₹{r['amount']} | '{r['description']}' ({r['category']})"
+                for r in rows[:25]
+            ])
+
+            peak_summary = f"Peak Spending Day: Day {peak_day_num} ({peak_date}) with ₹{peak_amount:.2f} spent (Top item: {peak_top_item['description'] if peak_top_item else 'None'})" if peak_date else "No peak day recorded."
+
+            system_instruction = f"""
+You are Aura, a friendly, concise AI financial voice assistant speaking with Chiranth.
+Today's date is {today_str}.
+User's Financial Summary: Total Income ₹{total_income:.2f}, Total Expenses ₹{total_expense:.2f}, Net Balance ₹{net_savings:.2f}.
+Current Active Month ({active_month_name}): Total Spent ₹{month_exp_total:.2f}, Total Income ₹{month_inc_total:.2f}, Net ₹{month_net:.2f}, Savings Rate {month_sav_rate}%.
+{peak_summary}
+Top Category ({active_month_name}): {top_cat_month} (₹{top_cat_month_amt:.2f}, {top_cat_pct}%).
+Recent transactions:
+{transactions_context if transactions_context else "No transactions logged yet."}
+
+Your job is to analyze the user's spoken input and return a strict JSON response.
+Allowed categories: 'Food', 'Salary', 'Rent', 'Utilities', 'Leisure', 'Entertainment', 'Other'.
+
+Output Schema (MUST return JSON ONLY without markdown backticks):
+{{
+  "intent": "draft_add" | "draft_delete" | "draft_update" | "query_answer" | "advice" | "chat",
+  "draft": {{
+    "action_type": "add_transaction" | "delete_transaction" | "update_transaction",
+    "description": "string (capitalized merchant/item)",
+    "amount": number,
+    "category": "Food" | "Salary" | "Rent" | "Utilities" | "Leisure" | "Entertainment" | "Other",
+    "type": "expense" | "income",
+    "date": "YYYY-MM-DD",
+    "transaction_id": number or null
+  }} or null,
+  "spoken_response": "1-2 concise sentences for text-to-speech voice output"
+}}
+
+Rules:
+1. When user greets (e.g. "Hi", "Hello"):
+   - spoken_response MUST be: "Hey Chiranth! What do you want to track or check today?"
+2. When user wants to log/add an expense or income:
+   - Set intent to "draft_add".
+   - Infer the category intelligently.
+   - Default date to {today_str} if not mentioned.
+   - spoken_response MUST ask for confirmation: "I will log an expense of ₹[amount] for [description] under [category] for today. Shall I confirm this?"
+3. When user asks for the highest point / peak day / highest expense:
+   - Set intent to "query_answer".
+   - Answer directly referencing Day {peak_day_num} ({peak_date}) and the ₹{peak_amount:.2f} spent.
+4. When user asks a spending/financial query or advice:
+   - Answer accurately and concisely in 1-2 sentences. Keep spoken_response under 30 words.
+"""
+            configured_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+            candidate_models = [configured_model, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+            models_to_try = list(dict.fromkeys(candidate_models))
+
+            for model_name in models_to_try:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=f"{system_instruction}\n\nUser Spoke: \"{transcript_clean}\"",
+                    )
+                    if response and response.text:
+                        raw_json = response.text.strip()
+                        if raw_json.startswith("```"):
+                            raw_json = re.sub(r"^```(?:json)?|```$", "", raw_json, flags=re.MULTILINE).strip()
+                        
+                        import json
+                        parsed = json.loads(raw_json)
+                        spoken = parsed.get("spoken_response", "I heard your request.")
+                        draft_data = parsed.get("draft")
+                        
+                        draft_obj = None
+                        if draft_data and parsed.get("intent") in ["draft_add", "draft_delete", "draft_update"]:
+                            draft_obj = VoiceActionDraft(
+                                action_type=draft_data.get("action_type", "add_transaction"),
+                                description=draft_data.get("description"),
+                                amount=float(draft_data.get("amount") or 0.0),
+                                category=draft_data.get("category", "Other"),
+                                type=draft_data.get("type", "expense"),
+                                date=draft_data.get("date", today_str),
+                                transaction_id=draft_data.get("transaction_id")
+                            )
+
+                        return VoiceAgentResponse(
+                            spoken_response=spoken,
+                            pending_action=draft_obj,
+                            should_refresh_data=False
+                        )
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # 5. Rich Local Semantic & Conversational Intelligence Engine
+    
+    # A. Wealth Doubling / Investment / Wealth Growth / Compounding
+    if any(w in transcript_lower for w in ["double", "grow money", "grow wealth", "multiply", "invest", "investment", "stocks", "mutual fund", "sip", "compounding", "wealth building", "passive income", "make more money", "financial freedom"]):
+        target_doubled = net_savings * 2
+        return VoiceAgentResponse(
+            spoken_response=f"To double your net balance of ₹{net_savings:,.0f} to ₹{target_doubled:,.0f}, you can use the Rule of 72. At an average 12% annual return in index mutual funds or equity SIPs, your money will double in about 6 years. The fastest way is to invest your monthly surplus and reduce discretionary spending.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # B. Highest Point / Peak Spending Day / Peak Point
+    if any(w in transcript_lower for w in ["highest point", "peak point", "peak day", "peak spend", "highest spending day", "highest spend day", "biggest day", "most expensive day"]):
+        if peak_date and peak_day_num:
+            item_info = f", led by {peak_top_item['description']} of ₹{peak_top_item['amount']:,.2f}" if peak_top_item else ""
+            return VoiceAgentResponse(
+                spoken_response=f"Your highest spending point in {active_month_name} was on Day {peak_day_num} ({peak_date}) with ₹{peak_amount:,.2f} spent{item_info}.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+        else:
+            return VoiceAgentResponse(
+                spoken_response=f"You have no recorded expenses for {active_month_name} yet.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+
+    # C. Highest / Biggest Single Expense Item
+    if any(w in transcript_lower for w in ["biggest expense", "highest expense", "biggest transaction", "highest transaction", "largest expense", "highest single", "biggest purchase"]):
+        if "this month" in transcript_lower and highest_tx_month:
+            return VoiceAgentResponse(
+                spoken_response=f"Your highest single expense in {active_month_name} was ₹{highest_tx_month['amount']:,.2f} for {highest_tx_month['description']} under {highest_tx_month['category']} on {highest_tx_month['date']}.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+        elif highest_tx_all:
+            return VoiceAgentResponse(
+                spoken_response=f"Your highest single expense all-time was ₹{highest_tx_all['amount']:,.2f} for {highest_tx_all['description']} under {highest_tx_all['category']} on {highest_tx_all['date']}.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+
+    # D. Top Spending Category / Most Spent On
+    if any(w in transcript_lower for w in ["top category", "highest category", "spend the most", "spent the most", "biggest category", "most spent on"]):
+        if top_cat_month:
+            return VoiceAgentResponse(
+                spoken_response=f"Your top expense category in {active_month_name} is {top_cat_month} at ₹{top_cat_month_amt:,.2f}, accounting for {top_cat_pct}% of your monthly expenses.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+
+    # E. Financial Health / "How am I doing"
+    if any(w in transcript_lower for w in ["how am i doing", "financial health", "am i spending too much", "how are my finances", "rate my budget", "financial status", "how's my spending", "am i broke"]):
+        if net_savings > 50000:
+            return VoiceAgentResponse(
+                spoken_response=f"You're in great shape, Chiranth! Your net balance is ₹{net_savings:,.2f} with total income of ₹{total_income:,.2f}. Keeping your expenses controlled will accelerate your financial growth.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+        else:
+            return VoiceAgentResponse(
+                spoken_response=f"Your net balance is ₹{net_savings:,.2f}. In {active_month_name}, you spent ₹{month_exp_total:,.2f}. Focus on trimming non-essential costs to build a stronger safety net.",
+                pending_action=None,
+                should_refresh_data=False
+            )
+
+    # F. Emergency Fund / Safety Net
+    if any(w in transcript_lower for w in ["emergency fund", "emergency savings", "safety net", "rainy day"]):
+        target_ef_min = month_exp_total * 3 if month_exp_total > 0 else 30000
+        target_ef_max = month_exp_total * 6 if month_exp_total > 0 else 60000
+        return VoiceAgentResponse(
+            spoken_response=f"A healthy emergency fund should cover 3 to 6 months of living expenses. For your spending level, aim for ₹{target_ef_min:,.0f} to ₹{target_ef_max:,.0f} in liquid savings.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # G. Savings Strategies & Cost Cutting
+    if any(w in transcript_lower for w in ["how to save", "save more", "cut cost", "cut expenses", "reduce spending", "save faster", "spend less"]):
+        cat_hint = f" Start by putting a cap on {top_cat_month} (currently ₹{top_cat_month_amt:,.2f})." if top_cat_month else ""
+        return VoiceAgentResponse(
+            spoken_response=f"To boost your savings, automate an investment transfer on payday and follow the 50/30/20 rule.{cat_hint}",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # H. Budgeting Rules
+    if any(w in transcript_lower for w in ["50 30 20", "50/30/20", "budget rule", "budgeting rule", "rule of 72"]):
+        return VoiceAgentResponse(
+            spoken_response="The 50/30/20 rule recommends spending 50% on needs, 30% on wants, and allocating 20% directly to savings and investments.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # I. Monthly Spending / Total Expense This Month
+    if any(w in transcript_lower for w in ["spent this month", "this month expenses", "spending this month", "total expense this month", "monthly spend", "expenses this month", "how much did i spend"]):
+        return VoiceAgentResponse(
+            spoken_response=f"In {active_month_name}, your total spending is ₹{month_exp_total:,.2f} across {len(month_expenses)} logged expenses.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # J. Monthly Income
+    if any(w in transcript_lower for w in ["income this month", "earned this month", "earnings this month", "received this month", "salary this month"]):
+        return VoiceAgentResponse(
+            spoken_response=f"In {active_month_name}, your total income is ₹{month_inc_total:,.2f}.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # K. Savings Rate / Monthly Savings
+    if any(w in transcript_lower for w in ["savings rate", "saved this month", "monthly savings", "savings this month"]):
+        return VoiceAgentResponse(
+            spoken_response=f"For {active_month_name}, your net savings are ₹{month_net:,.2f} with a savings rate of {month_sav_rate}%.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # L. Overall Net Balance
+    if any(w in transcript_lower for w in ["balance", "net balance", "how much do i have", "total savings", "total balance", "how much money"]):
+        return VoiceAgentResponse(
+            spoken_response=f"Hey Chiranth, your current net balance is ₹{net_savings:,.2f}, with ₹{total_income:,.2f} in total income and ₹{total_expense:,.2f} in total expenses.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # M. Advice / Budgeting Tips
+    if any(w in transcript_lower for w in ["advice", "tip", "suggest", "recommendation"]):
+        cat_tip = f" Since {top_cat_month} is your largest spend at ₹{top_cat_month_amt:,.2f}, setting a weekly budget there will make a big difference." if top_cat_month else ""
+        return VoiceAgentResponse(
+            spoken_response=f"Your net balance is ₹{net_savings:,.2f}.{cat_tip} Aim to invest at least 20% of your earnings systematically.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # N. Bot Persona / Small Talk / Appreciation
+    if any(w in transcript_lower for w in ["thank you", "thanks", "awesome", "great job", "you're smart", "good job", "nice"]):
+        return VoiceAgentResponse(
+            spoken_response="You're very welcome, Chiranth! I'm here anytime to help you stay on top of your financial goals.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    if any(w in transcript_lower for w in ["who are you", "what are you", "what is your name"]):
+        return VoiceAgentResponse(
+            spoken_response="I'm Aura, your AI financial assistant. I help you track transactions, manage your budget, and build long-term wealth.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    if any(w in transcript_lower for w in ["what can you do", "help me", "how to use", "capabilities"]):
+        return VoiceAgentResponse(
+            spoken_response="You can ask me to log expenses, check your balance, review peak spending days, or get tailored financial advice.",
+            pending_action=None,
+            should_refresh_data=False
+        )
+
+    # O. Log/Add Expense or Income via Heuristics
+    amount_match = re.search(r"(?:₹|rs\.?|rupees?)?\s*(\d+(?:\.\d{1,2})?)\s*(?:₹|rs\.?|rupees?)?", transcript_lower)
+    if amount_match:
+        amt = float(amount_match.group(1))
+        ttype = "income" if any(w in transcript_lower for w in ["salary", "earned", "income", "received", "credited", "freelance"]) else "expense"
+        
+        category = "Other"
+        if any(w in transcript_lower for w in ["food", "pizza", "burger", "lunch", "dinner", "breakfast", "swiggy", "zomato", "groceries", "milk", "tea", "coffee", "restaurant", "snack"]):
+            category = "Food"
+        elif any(w in transcript_lower for w in ["salary", "bonus", "dividend", "interest"]):
+            category = "Salary"
+        elif any(w in transcript_lower for w in ["rent", "pg", "flat", "room"]):
+            category = "Rent"
+        elif any(w in transcript_lower for w in ["bill", "electricity", "water", "wifi", "internet", "petrol", "gas", "fuel", "cab", "uber", "ola", "recharge", "utilities"]):
+            category = "Utilities"
+        elif any(w in transcript_lower for w in ["movie", "cinema", "netflix", "prime", "game", "gaming", "concert"]):
+            category = "Entertainment"
+        elif any(w in transcript_lower for w in ["shopping", "clothes", "shoes", "amazon", "flipkart", "party", "trip"]):
+            category = "Leisure"
+
+        desc = transcript_clean
+        clean_words = [w for w in transcript_clean.split() if not re.match(r"^(spent|log|add|paid|for|on|₹|rs|rupees?|\d+)$", w, re.I)]
+        if clean_words:
+            desc = " ".join(clean_words).capitalize()
+        else:
+            desc = f"{category} Expense"
+
+        draft = VoiceActionDraft(
+            action_type="add_transaction",
+            description=desc,
+            amount=amt,
+            category=category,
+            type=ttype,
+            date=today_str
+        )
+        return VoiceAgentResponse(
+            spoken_response=f"I will log a {ttype} of ₹{amt:,.2f} for {desc} under {category} for today. Shall I confirm this?",
+            pending_action=draft,
+            should_refresh_data=False
+        )
+
+    # P. Intelligent Contextual Conversational Fallback (Natural, personalized, helpful)
+    return VoiceAgentResponse(
+        spoken_response=f"I hear you, Chiranth! With your current balance of ₹{net_savings:,.2f}, smart budgeting and disciplined investing are your best moves. What specific financial goal are you targeting?",
+        pending_action=None,
+        should_refresh_data=False
+    )
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8083))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+
 
 

@@ -82,6 +82,31 @@ interface MonthlyAnalyticsResponse {
   selected_month_detail: SelectedMonthDetail;
 }
 
+interface VoiceActionDraft {
+  action_type: "add_transaction" | "update_transaction" | "delete_transaction";
+  description?: string;
+  amount?: number;
+  category?: string;
+  type?: "income" | "expense";
+  date?: string;
+  transaction_id?: number;
+}
+
+interface VoiceHistoryEntry {
+  id: string;
+  timestamp: string;
+  userText: string;
+  orbText: string;
+  action?: {
+    type: string;
+    description?: string;
+    amount?: number;
+    category?: string;
+    id?: number;
+  } | null;
+  status: "completed" | "pending" | "cancelled";
+}
+
 // State
 let transactions: Transaction[] = [];
 let activeAnalyticsTab: "month" | "history" | "weekly" = "month";
@@ -93,6 +118,16 @@ let currentPage = 1;
 const itemsPerPage = 8;
 let chatHistory: { role: "user" | "assistant"; content: string }[] = [];
 let pendingDeleteId: number | null = null;
+
+// Voice Agent State
+let isListening = false;
+let isVoiceMuted = false;
+let voicePendingAction: VoiceActionDraft | null = null;
+let voiceHistory: VoiceHistoryEntry[] = [];
+let selectedFemaleVoice: SpeechSynthesisVoice | null = null;
+let speechRecognition: any = null;
+let speechSilenceTimer: any = null;
+let isUserHoldingOrb = false;
 
 // Category Color Palette
 const CATEGORY_COLORS: Record<string, string> = {
@@ -143,6 +178,28 @@ const btnCloseDeleteModal = document.getElementById("btn-close-delete-modal") as
 const btnCancelDelete = document.getElementById("btn-cancel-delete") as HTMLButtonElement;
 const btnConfirmDelete = document.getElementById("btn-confirm-delete") as HTMLButtonElement;
 const deleteModalMsg = document.getElementById("delete-modal-message") as HTMLParagraphElement;
+
+// Voice Orb & History DOM Elements
+const voiceOrbWidget = document.getElementById("voice-orb-widget") as HTMLDivElement;
+const voiceOrbBtn = document.getElementById("voice-orb-btn") as HTMLButtonElement;
+const voiceTranscriptBubble = document.getElementById("voice-transcript-bubble") as HTMLDivElement;
+const voiceStatusLabel = document.getElementById("voice-status-label") as HTMLSpanElement;
+const voiceUserText = document.getElementById("voice-user-text") as HTMLParagraphElement;
+const voiceOrbText = document.getElementById("voice-orb-text") as HTMLParagraphElement;
+const voiceConfirmActions = document.getElementById("voice-confirm-actions") as HTMLDivElement;
+const btnVoiceConfirm = document.getElementById("btn-voice-confirm") as HTMLButtonElement;
+const btnVoiceCancel = document.getElementById("btn-voice-cancel") as HTMLButtonElement;
+const btnCloseTranscript = document.getElementById("btn-close-transcript") as HTMLButtonElement;
+const btnVoiceMute = document.getElementById("btn-voice-mute") as HTMLButtonElement;
+const voiceMuteIcon = document.getElementById("voice-mute-icon") as HTMLSpanElement;
+
+const btnOpenVoiceHistory = document.getElementById("btn-open-voice-history") as HTMLButtonElement;
+const voiceHistoryCountBadge = document.getElementById("voice-history-count") as HTMLSpanElement;
+const modalVoiceHistory = document.getElementById("modal-voice-history") as HTMLDivElement;
+const btnCloseVoiceHistory = document.getElementById("btn-close-voice-history") as HTMLButtonElement;
+const btnDismissVoiceHistory = document.getElementById("btn-dismiss-voice-history") as HTMLButtonElement;
+const btnClearVoiceHistory = document.getElementById("btn-clear-voice-history") as HTMLButtonElement;
+const voiceHistoryList = document.getElementById("voice-history-list") as HTMLDivElement;
 
 const aiInsightPanelEl = document.getElementById("ai-insight-panel") as HTMLDivElement;
 const chatMessagesEl = document.getElementById("chat-messages") as HTMLDivElement;
@@ -1864,6 +1921,375 @@ if (btnPrevPage && btnNextPage) {
   });
 }
 
+// ==========================================
+// VOICE AGENT & FEMALE TTS ENGINE
+// ==========================================
+
+function initFemaleVoice() {
+  if (!("speechSynthesis" in window)) return;
+  const loadVoices = () => {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return;
+    
+    // Priority search for high-fidelity English female voices
+    const femaleKeywords = [
+      "google uk english female",
+      "google us english female",
+      "microsoft zira",
+      "microsoft jenny",
+      "samantha",
+      "karen",
+      "victoria",
+      "moira",
+      "fiona",
+      "tessa",
+      "female"
+    ];
+    for (const kw of femaleKeywords) {
+      const match = voices.find(v => v.name.toLowerCase().includes(kw));
+      if (match) {
+        selectedFemaleVoice = match;
+        break;
+      }
+    }
+    if (!selectedFemaleVoice) {
+      selectedFemaleVoice = voices.find(v => v.lang.startsWith("en")) || voices[0];
+    }
+  };
+  loadVoices();
+  if (window.speechSynthesis.onvoiceschanged !== undefined) {
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+  }
+}
+
+function speakSpokenResponse(text: string) {
+  if (isVoiceMuted || !("speechSynthesis" in window)) {
+    setOrbState("idle");
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const cleanSpeech = text.replace(/[*_#`~]/g, "").trim();
+  const utterance = new SpeechSynthesisUtterance(cleanSpeech);
+  if (selectedFemaleVoice) utterance.voice = selectedFemaleVoice;
+  utterance.pitch = 1.05;
+  utterance.rate = 1.02;
+
+  utterance.onstart = () => {
+    setOrbState("speaking");
+  };
+  utterance.onend = () => {
+    setOrbState("idle");
+  };
+  utterance.onerror = () => {
+    setOrbState("idle");
+  };
+
+  window.speechSynthesis.speak(utterance);
+}
+
+function setOrbState(state: "idle" | "listening" | "thinking" | "speaking") {
+  voiceOrbBtn.className = `voice-orb-btn ${state}`;
+  if (state === "listening") {
+    voiceStatusLabel.innerText = "Listening...";
+    voiceTranscriptBubble.style.display = "block";
+  } else if (state === "thinking") {
+    voiceStatusLabel.innerText = "Processing...";
+    voiceTranscriptBubble.style.display = "block";
+  } else if (state === "speaking") {
+    voiceStatusLabel.innerText = "Aura Speaking";
+    voiceTranscriptBubble.style.display = "block";
+  } else if (state === "idle" && !voicePendingAction) {
+    voiceStatusLabel.innerText = "Ready";
+  }
+}
+
+let activeTranscript = "";
+
+function initSpeechRecognition() {
+  const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  if (!SpeechRecognitionAPI) {
+    console.warn("Speech recognition is not supported in this browser.");
+    return;
+  }
+
+  speechRecognition = new SpeechRecognitionAPI();
+  speechRecognition.continuous = false;
+  speechRecognition.interimResults = true;
+  speechRecognition.lang = "en-IN";
+
+  speechRecognition.onstart = () => {
+    isListening = true;
+    activeTranscript = "";
+    setOrbState("listening");
+    voiceUserText.innerText = "Listening...";
+    voiceOrbText.innerText = "";
+  };
+
+  speechRecognition.onresult = (e: any) => {
+    let interim = "";
+    let finalTranscript = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const transcript = e.results[i][0].transcript;
+      if (e.results[i].isFinal) {
+        finalTranscript += transcript;
+      } else {
+        interim += transcript;
+      }
+    }
+    activeTranscript = (finalTranscript || interim).trim();
+    if (activeTranscript) {
+      voiceUserText.innerText = activeTranscript;
+    }
+  };
+
+  speechRecognition.onerror = (e: any) => {
+    console.warn("Speech Recognition error:", e.error);
+    isListening = false;
+    if (e.error === "no-speech") {
+      setOrbState("idle");
+      voiceUserText.innerText = "No speech detected. Tap the orb to try again.";
+      return;
+    }
+    stopListening();
+    if (e.error === "not-allowed") {
+      showNotification("Microphone access denied. Please allow mic permission in your browser address bar.", "danger");
+    }
+  };
+
+  speechRecognition.onend = () => {
+    isListening = false;
+    const transcript = (activeTranscript || voiceUserText.innerText || "").replace(/^(Listening\.\.\.|No speech detected.*)$/i, "").trim();
+    if (transcript) {
+      dispatchVoiceCommand(transcript);
+    } else {
+      setOrbState("idle");
+    }
+  };
+}
+
+function startListening() {
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
+
+  if (!speechRecognition) {
+    initSpeechRecognition();
+  }
+
+  if (speechRecognition) {
+    try {
+      activeTranscript = "";
+      speechRecognition.start();
+    } catch (err) {
+      speechRecognition.stop();
+      setTimeout(() => {
+        try {
+          activeTranscript = "";
+          speechRecognition.start();
+        } catch (e) {}
+      }, 150);
+    }
+  } else {
+    showNotification("Voice recognition is not supported in this browser. Please use Chrome or Edge.", "danger");
+  }
+}
+
+function stopListening() {
+  if (speechRecognition && isListening) {
+    try {
+      speechRecognition.stop();
+    } catch (e) {}
+  }
+  isListening = false;
+}
+
+async function dispatchVoiceCommand(transcript: string, userConfirmed?: boolean) {
+  setOrbState("thinking");
+  voiceOrbText.innerText = "Thinking...";
+
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/agent/voice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transcript,
+        history: chatHistory.slice(-6),
+        pending_action: voicePendingAction,
+        user_confirmed: userConfirmed
+      })
+    });
+
+    if (!response.ok) throw new Error("Error processing voice command.");
+    const data = await response.json();
+
+    voiceOrbText.innerText = data.spoken_response;
+    voicePendingAction = data.pending_action || null;
+
+    if (voicePendingAction) {
+      voiceConfirmActions.style.display = "flex";
+    } else {
+      voiceConfirmActions.style.display = "none";
+    }
+
+    // Save to voice history
+    const entry: VoiceHistoryEntry = {
+      id: `voice-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      userText: transcript,
+      orbText: data.spoken_response,
+      action: data.action_taken,
+      status: data.action_taken ? "completed" : (voicePendingAction ? "pending" : "completed")
+    };
+    saveVoiceHistoryEntry(entry);
+
+    // Speak aloud with natural female voice
+    speakSpokenResponse(data.spoken_response);
+
+    // Refresh UI if transaction was logged / updated / deleted
+    if (data.should_refresh_data) {
+      await loadTransactions();
+    }
+  } catch (err) {
+    voiceOrbText.innerText = "Sorry, I had trouble connecting to the financial assistant.";
+    setOrbState("idle");
+    speakSpokenResponse("Sorry, I had trouble connecting to the financial assistant.");
+  }
+}
+
+// Voice History Helpers
+function loadVoiceHistory() {
+  try {
+    const saved = localStorage.getItem("aura_voice_history");
+    voiceHistory = saved ? JSON.parse(saved) : [];
+    updateVoiceHistoryBadge();
+  } catch (e) {
+    voiceHistory = [];
+  }
+}
+
+function saveVoiceHistoryEntry(entry: VoiceHistoryEntry) {
+  voiceHistory.unshift(entry);
+  if (voiceHistory.length > 50) voiceHistory.pop();
+  try {
+    localStorage.setItem("aura_voice_history", JSON.stringify(voiceHistory));
+  } catch (e) {}
+  updateVoiceHistoryBadge();
+  renderVoiceHistory();
+}
+
+function updateVoiceHistoryBadge() {
+  if (voiceHistory.length > 0) {
+    voiceHistoryCountBadge.style.display = "inline-block";
+    voiceHistoryCountBadge.innerText = String(voiceHistory.length);
+  } else {
+    voiceHistoryCountBadge.style.display = "none";
+  }
+}
+
+function renderVoiceHistory() {
+  if (!voiceHistory.length) {
+    voiceHistoryList.innerHTML = `
+      <div class="voice-history-empty">
+        <p>No voice interactions logged yet. Tap the glowing orb at the bottom right to start speaking with Aura!</p>
+      </div>
+    `;
+    return;
+  }
+
+  voiceHistoryList.innerHTML = voiceHistory.map(item => {
+    let actionBadge = "";
+    if (item.action) {
+      const act = item.action;
+      if (act.type === "added") {
+        actionBadge = `<span class="voice-action-badge">🟢 Added: ₹${act.amount?.toFixed(2)} • ${act.category || 'Expense'}</span>`;
+      } else if (act.type === "deleted") {
+        actionBadge = `<span class="voice-action-badge deleted">🔴 Deleted Transaction #${act.id}</span>`;
+      } else if (act.type === "updated") {
+        actionBadge = `<span class="voice-action-badge updated">🟡 Updated: ₹${act.amount?.toFixed(2)}</span>`;
+      }
+    } else if (item.status === "pending") {
+      actionBadge = `<span class="voice-action-badge updated">⏳ Pending Confirmation</span>`;
+    }
+
+    return `
+      <div class="voice-history-card">
+        <div class="voice-history-header">
+          <span>${item.timestamp}</span>
+          ${actionBadge}
+        </div>
+        <div class="voice-turn-bubble voice-turn-user">
+          <strong>You:</strong> "${item.userText}"
+        </div>
+        <div class="voice-turn-bubble voice-turn-orb">
+          <strong>Aura:</strong> ${item.orbText}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+// Voice Orb Tap-to-Talk Event Listener
+voiceOrbBtn.addEventListener("click", (e) => {
+  e.preventDefault();
+  if (isListening) {
+    stopListening();
+  } else {
+    startListening();
+  }
+});
+
+btnVoiceMute.addEventListener("click", () => {
+  isVoiceMuted = !isVoiceMuted;
+  voiceMuteIcon.innerText = isVoiceMuted ? "🔇" : "🔊";
+  if (isVoiceMuted && "speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
+  showNotification(isVoiceMuted ? "Voice audio muted." : "Voice audio unmuted.", "success");
+});
+
+btnCloseTranscript.addEventListener("click", () => {
+  voiceTranscriptBubble.style.display = "none";
+});
+
+btnVoiceConfirm.addEventListener("click", () => {
+  if (voicePendingAction) {
+    dispatchVoiceCommand("Yes confirm", true);
+  }
+});
+
+btnVoiceCancel.addEventListener("click", () => {
+  if (voicePendingAction) {
+    dispatchVoiceCommand("Cancel", false);
+  }
+});
+
+btnOpenVoiceHistory.addEventListener("click", () => {
+  renderVoiceHistory();
+  modalVoiceHistory.style.display = "flex";
+});
+
+btnCloseVoiceHistory.addEventListener("click", () => {
+  modalVoiceHistory.style.display = "none";
+});
+
+btnDismissVoiceHistory.addEventListener("click", () => {
+  modalVoiceHistory.style.display = "none";
+});
+
+modalVoiceHistory.addEventListener("click", (e) => {
+  if (e.target === modalVoiceHistory) modalVoiceHistory.style.display = "none";
+});
+
+btnClearVoiceHistory.addEventListener("click", () => {
+  voiceHistory = [];
+  try {
+    localStorage.removeItem("aura_voice_history");
+  } catch (e) {}
+  updateVoiceHistoryBadge();
+  renderVoiceHistory();
+  showNotification("Voice history cleared.", "success");
+});
+
 let isInitialized = false;
 
 // Startup initialization
@@ -1872,6 +2298,9 @@ async function init() {
   isInitialized = true;
 
   setDefaultDate();
+  initFemaleVoice();
+  initSpeechRecognition();
+  loadVoiceHistory();
 
   const isOnline = await checkApiStatus();
   if (isOnline) {

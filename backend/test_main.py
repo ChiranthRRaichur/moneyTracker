@@ -258,3 +258,41 @@ def test_monthly_analytics():
         assert "Leisure" in categories
         assert categories["Leisure"]["amount"] == 1000.0
 
+def test_voice_agent():
+    with patch.dict(os.environ, {"DATABASE_PATH": TEST_DB}):
+        # 1. Draft an expense voice command
+        draft_res = client.post("/api/agent/voice", json={
+            "transcript": "Spent 450 on pizza"
+        })
+        assert draft_res.status_code == 200
+        draft_data = draft_res.json()
+        assert draft_data["pending_action"] is not None
+        assert draft_data["pending_action"]["amount"] == 450.0
+        assert draft_data["pending_action"]["category"] == "Food"
+        assert "Shall I confirm" in draft_data["spoken_response"]
+
+        # 2. Confirm the drafted expense
+        confirm_res = client.post("/api/agent/voice", json={
+            "transcript": "Yes confirm",
+            "pending_action": draft_data["pending_action"],
+            "user_confirmed": True
+        })
+        assert confirm_res.status_code == 200
+        confirm_data = confirm_res.json()
+        assert confirm_data["should_refresh_data"] is True
+        assert confirm_data["action_taken"]["type"] == "added"
+        assert "Confirmed" in confirm_data["spoken_response"]
+
+        # 3. Verify transaction was written to DB
+        tx_list = client.get("/api/transactions").json()
+        assert len(tx_list) == 1
+        assert tx_list[0]["amount"] == 450.0
+
+        # 4. Voice query balance
+        balance_res = client.post("/api/agent/voice", json={
+            "transcript": "What is my net balance?"
+        })
+        assert balance_res.status_code == 200
+        assert "net balance is" in balance_res.json()["spoken_response"]
+
+
